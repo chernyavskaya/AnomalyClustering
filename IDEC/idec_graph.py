@@ -22,6 +22,7 @@ import torch.nn.functional as F
 from torch.nn.parameter import Parameter
 from torch.optim import Adam
 from torch.nn import Linear
+from torch.nn import ModuleList
 
 from scipy.sparse import csr_matrix
 from torch_geometric.nn import Sequential, GCNConv, EdgeConv, GATConv, GATv2Conv, global_mean_pool, DynamicEdgeConv, BatchNorm
@@ -36,16 +37,18 @@ sys.path.append(os.path.abspath(os.path.join('../../ADgvae/')))
 import utils_torch.model_summary as summary
 
 
-
 class GCNAE(torch.nn.Module):
   def __init__(self, input_shape, hidden_channels,latent_dim):
     super(GCNAE, self).__init__()
     # ENCODER 
     self.num_fixed_nodes = input_shape[0]
     self.num_feats = input_shape[1]
-    self.enc_conv1 = GCNConv(self.num_feats, hidden_channels[0]) 
-    self.enc_conv2 = GCNConv(hidden_channels[0], hidden_channels[1]) 
-    self.enc_conv3 = GCNConv(hidden_channels[1], latent_dim) 
+    self.enc_convs = ModuleList()
+    self.enc_convs.append(GCNConv(self.num_feats, hidden_channels[0]))
+    for i in range(0,len(hidden_channels)-1):
+        self.enc_convs.append(GCNConv(hidden_channels[i], hidden_channels[i+1]))
+    self.enc_convs.append(GCNConv(hidden_channels[-1], latent_dim))
+    self.num_enc_convs  = len(self.enc_convs)
     #scatter_mean from batch_size x num_fixed_nodes -> batch_size
     self.enc_fc1 = torch.nn.Linear(2*latent_dim, 2*latent_dim) 
     self.enc_fc2 = torch.nn.Linear(2*latent_dim, latent_dim) 
@@ -54,18 +57,19 @@ class GCNAE(torch.nn.Module):
     #upsample from batch_size -> batch_size x num_fixed_nodes 
     self.dec_fc1 = torch.nn.Linear(latent_dim, latent_dim) #to map from tiled (batch_size x num_fixed_nodes) x latent space to a more meaningful weights between the nodes 
     self.dec_fc2 = torch.nn.Linear(latent_dim, 2*latent_dim)
-    self.dec_conv1 = GCNConv(2*latent_dim, hidden_channels[-1]) 
-    self.dec_conv2 = GCNConv(hidden_channels[-1], hidden_channels[-2]) 
-    self.dec_conv3 = GCNConv(hidden_channels[-2], self.num_feats) 
+    self.dec_convs = ModuleList()
+    self.dec_convs.append(GCNConv(2*latent_dim, hidden_channels[-1]))
+    for i in range(len(hidden_channels)-1,0,-1):
+        self.dec_convs.append(GCNConv(hidden_channels[i], hidden_channels[i-1]))
+    self.dec_convs.append(GCNConv(hidden_channels[0], self.num_feats))
+    self.num_dec_convs  = len(self.dec_convs)
+
 
   def encode(self, x, edge_index,batch_index):
-    # 1. Obtain node embeddings 
-    x = self.enc_conv1(x, edge_index)
-    x = F.relu(x)
-    x = self.enc_conv2(x, edge_index)
-    x = F.relu(x)
-    x = self.enc_conv3(x, edge_index)
-    x = F.relu(x)
+    # Obtain node embeddings 
+    for i_layer in range(self.num_enc_convs):
+        x = self.enc_convs[i_layer](x,edge_index)
+        x = F.relu(x)
     #reduce from all the nodes in the graph to 1 per graph
     x_mean = scatter_mean(x, batch_index, dim=0)
     x_max = scatter_max(x, batch_index, dim=0)[0]
@@ -82,12 +86,9 @@ class GCNAE(torch.nn.Module):
     x = torch.relu(x)
     x = self.dec_fc2(x)
     x = torch.relu(x)
-    x = self.dec_conv1(x, edge_index)
-    x = F.relu(x)
-    x = self.dec_conv2(x, edge_index)
-    x = F.relu(x)
-    x = self.dec_conv3(x, edge_index)
-    x = F.relu(x)
+    for i_layer in range(self.num_dec_convs):
+        x = self.dec_convs[i_layer](x,edge_index)
+        x = F.relu(x)
     return x
  
   def forward(self,x, edge_index,batch_index):
@@ -173,7 +174,7 @@ def pretrain_ae(model):
     train_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True,drop_last=True) #,num_workers=5
     print(model)
     optimizer = Adam(model.parameters(), lr=args.lr)
-    for epoch in range(200):
+    for epoch in range(args.n_epochs):
         total_loss = 0.
         for i, data in enumerate(train_loader):
             x = data.x.to(device)
@@ -238,7 +239,7 @@ def train_idec():
     pred_labels_last = 0
     delta_label = 1e4
     model.train()
-    for epoch in range(100):
+    for epoch in range(args.n_epochs):
 
         #evaluation part
         if epoch % args.update_interval == 0:
@@ -307,11 +308,12 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', default=256, type=int)
     parser.add_argument('--latent_dim', default=10, type=int)
     parser.add_argument('--input_shape', default=[17,5], type=int)
-    parser.add_argument('--hidden_channels', default=[3,2], type=int)
+    parser.add_argument('--hidden_channels', default=[10,20,10,5,2], type=int)
     parser.add_argument('--pretrain_path', type=str, default='data_graph/graph_ae_pretrain.pkl') #data/gcnae_test
     parser.add_argument('--gamma',default=0.1,type=float,help='coefficient of clustering loss')
     parser.add_argument('--update_interval', default=1, type=int)
     parser.add_argument('--tol', default=0.001, type=float)
+    parser.add_argument('--n_epochs',default=10, type=int)
     args = parser.parse_args()
     args.cuda = torch.cuda.is_available()
     print("use cuda: {}".format(args.cuda))
@@ -328,7 +330,7 @@ if __name__ == "__main__":
     file_dataset[:,:,3] = file_dataset[:,:,3]/1e5
 
     datas = []
-    tot_evt = int(1e4) #file_dataset.shape[0]# int(1e4)
+    tot_evt =  int(1e3)#file_dataset.shape[0]# int(1e4)
     print('Preparing the dataset of {} events'.format(tot_evt))
     n_objs = 17
     adj = [csr_matrix(np.ones((n_objs,n_objs)) - np.eye(n_objs))]*tot_evt
