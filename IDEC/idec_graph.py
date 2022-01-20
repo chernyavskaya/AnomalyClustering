@@ -36,18 +36,47 @@ import os.path as osp
 sys.path.append(os.path.abspath(os.path.join('../../ADgvae/')))
 import utils_torch.model_summary as summary
 
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
-class GCNAE(torch.nn.Module):
+
+class EdgeConvLayer(nn.Module):   
+    def __init__(self, in_dim, out_dim, dropout=0.1, batch_norm=True, activation=nn.ReLU(), aggr='mean'):
+        super().__init__()
+        self.activation = activation
+        self.batch_norm = batch_norm
+            
+        if self.batch_norm:
+            self.edgeconv = nn.Sequential(nn.Linear(2*(in_dim), out_dim),
+                                   nn.BatchNorm1d(out_dim),
+                                   activation,
+                                   nn.Dropout(p=dropout)) 
+        else :
+            self.edgeconv = nn.Sequential(nn.Linear(2*(in_dim), out_dim),
+                                   activation,
+                                   nn.Dropout(p=dropout))             
+
+        ###dropout in AE as a regularization 
+        self.edgeconv = EdgeConv(nn=self.edgeconv,aggr=aggr)
+
+    def forward(self, feature, edge_index):
+        h = self.edgeconv(feature, edge_index)
+    
+        return h
+
+class GraphAE(torch.nn.Module):
   def __init__(self, input_shape, hidden_channels,latent_dim):
-    super(GCNAE, self).__init__()
+    super(GraphAE, self).__init__()
+
+    #Which main block to use for the architecture
+    layer = EdgeConvLayer # EdgeConvLayer #GCNConv 
     # ENCODER 
     self.num_fixed_nodes = input_shape[0]
     self.num_feats = input_shape[1]
     self.enc_convs = ModuleList()
-    self.enc_convs.append(GCNConv(self.num_feats, hidden_channels[0]))
+    self.enc_convs.append(layer(self.num_feats, hidden_channels[0]))
     for i in range(0,len(hidden_channels)-1):
-        self.enc_convs.append(GCNConv(hidden_channels[i], hidden_channels[i+1]))
-    self.enc_convs.append(GCNConv(hidden_channels[-1], latent_dim))
+        self.enc_convs.append(layer(hidden_channels[i], hidden_channels[i+1]))
+    self.enc_convs.append(layer(hidden_channels[-1], latent_dim))
     self.num_enc_convs  = len(self.enc_convs)
     #scatter_mean from batch_size x num_fixed_nodes -> batch_size
     self.enc_fc1 = torch.nn.Linear(2*latent_dim, 2*latent_dim) 
@@ -58,10 +87,10 @@ class GCNAE(torch.nn.Module):
     self.dec_fc1 = torch.nn.Linear(latent_dim, latent_dim) #to map from tiled (batch_size x num_fixed_nodes) x latent space to a more meaningful weights between the nodes 
     self.dec_fc2 = torch.nn.Linear(latent_dim, 2*latent_dim)
     self.dec_convs = ModuleList()
-    self.dec_convs.append(GCNConv(2*latent_dim, hidden_channels[-1]))
+    self.dec_convs.append(layer(2*latent_dim, hidden_channels[-1]))
     for i in range(len(hidden_channels)-1,0,-1):
-        self.dec_convs.append(GCNConv(hidden_channels[i], hidden_channels[i-1]))
-    self.dec_convs.append(GCNConv(hidden_channels[0], self.num_feats))
+        self.dec_convs.append(layer(hidden_channels[i], hidden_channels[i-1]))
+    self.dec_convs.append(layer(hidden_channels[0], self.num_feats))
     self.num_dec_convs  = len(self.dec_convs)
 
 
@@ -112,7 +141,7 @@ class IDEC(nn.Module):
         self.alpha = 1.0
         self.pretrain_path = pretrain_path
 
-        self.ae = GCNAE(
+        self.ae = GraphAE(
                     input_shape=input_shape, 
                     hidden_channels=hidden_channels, 
                     latent_dim=latent_dim)
@@ -149,18 +178,21 @@ class IDEC(nn.Module):
     def updateClusterCenter(self, cc):
         self.cluster_layer.data = torch.from_numpy(cc).to(device)
 
+
     def validateOnCompleteTestData(self,test_loader):
         self.eval()
         pred_labels = np.array([self.forward(d.x.to(device),d.edge_index.to(device),d.batch.to(device))[1].data.cpu().numpy().argmax(1) for i,d in enumerate(test_loader)]) #argmax(1) #index (cluster nubmber) of the cluster with the highest probability q.
+        latent_pred = np.array([self.forward(d.x.to(device),d.edge_index.to(device),d.batch.to(device))[2].data.cpu().numpy() for i,d in enumerate(test_loader)])
         true_labels = np.array([d.y.cpu().numpy() for i,d in enumerate(test_loader)])
         #reshape
         pred_labels = np.reshape(pred_labels,pred_labels.shape[0]*pred_labels.shape[1])
         true_labels = np.reshape(true_labels,true_labels.shape[0]*true_labels.shape[1])
+        latent_pred = np.reshape(latent_pred,(latent_pred.shape[0]*latent_pred.shape[1],latent_pred.shape[2]))
 
-        acc,_ = cluster_acc(true_labels, pred_labels)
+        acc,reassignment = cluster_acc(true_labels, pred_labels)
         nmi = nmi_score(true_labels, pred_labels)
         ari = ari_score(true_labels, pred_labels)
-        return acc, nmi, ari, pred_labels
+        return acc, nmi, ari,reassignment, true_labels, pred_labels, latent_pred
 
 def target_distribution(q):
     weight = q**2 / q.sum(0)
@@ -206,8 +238,10 @@ def train_idec():
     model.to(device)
     summary.gnn_model_summary(model)
 
-    #model.pretrain('data_graph/graph_ae_pretrain.pkl')
-    model.pretrain()
+    if args.retrain_ae :
+        model.pretrain()
+    else :
+        model.pretrain(args.pretrain_path)
 
     train_loader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=False, drop_last=True)
@@ -215,6 +249,7 @@ def train_idec():
 
     print('Initializing cluster center with pre-trained weights')
     if args.full_kmeans:
+        print('Full k-means')
         #Full k-means if dataset can fit in memeory (better cluster initialization and faster convergence of the model)
         full_dataset_loader = DataLoader(dataset, batch_size=len(dataset), shuffle=True,drop_last=True) #,num_workers=5
         for i, data in enumerate(full_dataset_loader):
@@ -227,6 +262,7 @@ def train_idec():
             model.cluster_layer.data = torch.tensor(kmeans.cluster_centers_).to(device)
     else:
         #Mini batch k-means if k-means on full dataset cannot fit in memory, fast but slower convergence of the model as cluster initialization is not as good
+        print('Minbatch k-means')
         mbk = MiniBatchKMeans(n_clusters=args.n_clusters, n_init=20, batch_size=args.batch_size)
         #step 1 - get cluster center from batch
         #here we are using minibatch kmeans to be able to cope with larger dataset.
@@ -255,7 +291,7 @@ def train_idec():
                 p = target_distribution(tmp_q_i)
                 p_all.append(p)
 
-            acc, nmi, ari, pred_labels = model.validateOnCompleteTestData(train_loader)
+            acc, nmi, ari, _, _, pred_labels,_ = model.validateOnCompleteTestData(train_loader)
             if epoch==0 :
                 pred_labels_last = pred_labels
             else:
@@ -290,7 +326,7 @@ def train_idec():
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-        if epoch==99 :
+        if epoch==args.n_epochs-1 :
             torch.save(model.state_dict(), args.pretrain_path.replace('.pkl','_fullmodel_num_clust_{}.pkl'.format(args.n_clusters)))
 
 
@@ -302,22 +338,23 @@ if __name__ == "__main__":
         description='train',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-    parser.add_argument('--full_kmeans', type=bool, default=False)
+    parser.add_argument('--full_kmeans', type=int, default=0)
+    parser.add_argument('--retrain_ae', type=int, default=1)
     parser.add_argument('--lr', type=float, default=0.001)
     parser.add_argument('--n_clusters', default=5, type=int)
     parser.add_argument('--batch_size', default=256, type=int)
     parser.add_argument('--latent_dim', default=10, type=int)
     parser.add_argument('--input_shape', default=[17,5], type=int)
-    parser.add_argument('--hidden_channels', default=[10,20,10,5,2], type=int)
+    parser.add_argument('--hidden_channels', default=[4,4,3,3,2,2], type=int)
     parser.add_argument('--pretrain_path', type=str, default='data_graph/graph_ae_pretrain.pkl') #data/gcnae_test
     parser.add_argument('--gamma',default=0.1,type=float,help='coefficient of clustering loss')
     parser.add_argument('--update_interval', default=1, type=int)
     parser.add_argument('--tol', default=0.001, type=float)
-    parser.add_argument('--n_epochs',default=10, type=int)
+    parser.add_argument('--n_epochs',default=20, type=int)
     args = parser.parse_args()
     args.cuda = torch.cuda.is_available()
     print("use cuda: {}".format(args.cuda))
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    #device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     print(device)
     #device='cpu'
 
@@ -328,9 +365,15 @@ if __name__ == "__main__":
     file_dataset = np.array(in_file['dataset'])
     file_dataset[:,:,2] = file_dataset[:,:,2]/1e5
     file_dataset[:,:,3] = file_dataset[:,:,3]/1e5
+    #Select top N processes only :
+    n_proc = 3
+    (unique, counts) = np.unique(file_dataset[:,:,0], return_counts=True)
+    procs_sorted, counts_sorted = zip(*sorted(zip(unique, counts), key=lambda x: x[1],reverse=True))
+    top_proc_mask = np.isin(file_dataset[:,0,0], procs_sorted[:n_proc]) #choose top 3
+    file_dataset = file_dataset[top_proc_mask]
 
     datas = []
-    tot_evt =  int(1e3)#file_dataset.shape[0]# int(1e4)
+    tot_evt = int(1e4) # file_dataset.shape[0]# int(1e4)
     print('Preparing the dataset of {} events'.format(tot_evt))
     n_objs = 17
     adj = [csr_matrix(np.ones((n_objs,n_objs)) - np.eye(n_objs))]*tot_evt
