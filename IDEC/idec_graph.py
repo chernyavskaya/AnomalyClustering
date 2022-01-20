@@ -69,18 +69,18 @@ class GraphAE(torch.nn.Module):
 
     #Which main block to use for the architecture
     layer = EdgeConvLayer # EdgeConvLayer #GCNConv 
-    # ENCODER 
     self.num_fixed_nodes = input_shape[0]
     self.num_feats = input_shape[1]
 
-    self.enc_convs = ModuleList()
+    # ENCODER 
+    self.enc_convs = ModuleList()   
     self.enc_convs.append(layer(self.num_feats, hidden_channels[0]))
     for i in range(0,len(hidden_channels)-1):
         self.enc_convs.append(layer(hidden_channels[i], hidden_channels[i+1]))
     self.enc_convs.append(layer(hidden_channels[-1], latent_dim))
     self.num_enc_convs  = len(self.enc_convs)
     #scatter_mean from batch_size x num_fixed_nodes -> batch_size
-    self.enc_fc1 = torch.nn.Linear(2*latent_dim, 2*latent_dim) 
+    self.enc_fc1 = torch.nn.Linear(2*latent_dim, 2*latent_dim)  #check that the weights are not 1., otherwise remove
     self.enc_fc2 = torch.nn.Linear(2*latent_dim, latent_dim) 
 
     # DECODER
@@ -223,7 +223,7 @@ def pretrain_ae(model):
 
             optimizer.zero_grad()
             x_bar, z = model(x,edge_index,batch_index)
-            loss = F.mse_loss(x_bar, x)
+            loss = F.mse_loss(x_bar, x) 
             total_loss += loss.item()
 
             loss.backward()
@@ -320,6 +320,7 @@ def train_idec():
                 break
 
         #training part
+        total_loss,total_kl_loss,total_reco_loss  = 0.,0.,0.
         for i, data in enumerate(train_loader):
             x = data.x.to(device)
             edge_index = data.edge_index.to(device)
@@ -332,8 +333,12 @@ def train_idec():
             loss = args.gamma * kl_loss + reconstr_loss
 
             optimizer.zero_grad()
+            total_loss += loss.item()
+            total_kl_loss += kl_loss.item()
+            total_reco_loss += reconstr_loss.item()
             loss.backward()
             optimizer.step()
+        print("epoch {} : total loss={:.4f}, kl loss={:.4f}, reco loss={:.4f} ".format(epoch, total_loss / (i + 1), total_kl_loss / (i + 1) , total_reco_loss / (i + 1)))
         if epoch==args.n_epochs-1 :
             torch.save(model.state_dict(), args.pretrain_path.replace('.pkl','_fullmodel_num_clust_{}.pkl'.format(args.n_clusters)))
 
@@ -353,12 +358,12 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', default=256, type=int)
     parser.add_argument('--latent_dim', default=10, type=int)
     parser.add_argument('--input_shape', default=[17,5], type=int)
-    parser.add_argument('--hidden_channels', default=[4,4,3,3,2,2], type=int)
-    parser.add_argument('--pretrain_path', type=str, default='data_graph/graph_ae_pretrain.pkl') #data/gcnae_test
+    parser.add_argument('--hidden_channels', default=[10,20,30,20,10,2], type=int)   ## [8, 12, 16, 20, 25, 30 ]
+    parser.add_argument('--pretrain_path', type=str, default='data_graph/graph_ae_pretrain.pkl') 
     parser.add_argument('--gamma',default=0.1,type=float,help='coefficient of clustering loss')
     parser.add_argument('--update_interval', default=1, type=int)
     parser.add_argument('--tol', default=0.001, type=float)
-    parser.add_argument('--n_epochs',default=20, type=int)
+    parser.add_argument('--n_epochs',default=100, type=int)
     args = parser.parse_args()
     args.cuda = torch.cuda.is_available()
     print("use cuda: {}".format(args.cuda))
@@ -366,13 +371,16 @@ if __name__ == "__main__":
     print(device)
     #device='cpu'
 
+
+    #Try : update hidden channels, try Elu (lecky relu)
+
     DATA_PATH = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/AnomalyClustering/inputs/'
     TRAIN_NAME = 'background_chan3_passed_ae_l1.h5'
     filename_bg = DATA_PATH + TRAIN_NAME 
     in_file = h5py.File(filename_bg, 'r') 
     file_dataset = np.array(in_file['dataset'])
-    file_dataset[:,:,2] = file_dataset[:,:,2]/1e5
-    file_dataset[:,:,3] = file_dataset[:,:,3]/1e5
+    file_dataset[:,:,2] = file_dataset[:,:,2]/1e5 #E
+    file_dataset[:,:,3] = file_dataset[:,:,3]/1e5 #pT 
     #Select top N processes only :
     n_proc = 3
     (unique, counts) = np.unique(file_dataset[:,:,0], return_counts=True)
@@ -381,7 +389,7 @@ if __name__ == "__main__":
     file_dataset = file_dataset[top_proc_mask]
 
     datas = []
-    tot_evt = int(1e4) # file_dataset.shape[0]# int(1e4)
+    tot_evt = file_dataset.shape[0]# int(1e4)
     print('Preparing the dataset of {} events'.format(tot_evt))
     n_objs = 17
     adj = [csr_matrix(np.ones((n_objs,n_objs)) - np.eye(n_objs))]*tot_evt
