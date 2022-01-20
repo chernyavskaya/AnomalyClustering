@@ -72,6 +72,7 @@ class GraphAE(torch.nn.Module):
     # ENCODER 
     self.num_fixed_nodes = input_shape[0]
     self.num_feats = input_shape[1]
+
     self.enc_convs = ModuleList()
     self.enc_convs.append(layer(self.num_feats, hidden_channels[0]))
     for i in range(0,len(hidden_channels)-1):
@@ -83,9 +84,13 @@ class GraphAE(torch.nn.Module):
     self.enc_fc2 = torch.nn.Linear(2*latent_dim, latent_dim) 
 
     # DECODER
+    self.dec_fc1 = torch.nn.Linear(latent_dim, 2*latent_dim)
+    self.dec_fc2 = torch.nn.Linear(2*latent_dim, 2*latent_dim*self.num_fixed_nodes) #to map from tiled (batch_size x num_fixed_nodes) x latent space to a more meaningful weights between the nodes 
     #upsample from batch_size -> batch_size x num_fixed_nodes 
-    self.dec_fc1 = torch.nn.Linear(latent_dim, latent_dim) #to map from tiled (batch_size x num_fixed_nodes) x latent space to a more meaningful weights between the nodes 
-    self.dec_fc2 = torch.nn.Linear(latent_dim, 2*latent_dim)
+    #self.dec_fc1 = torch.nn.Linear(latent_dim, latent_dim) #to map from tiled (batch_size x num_fixed_nodes) x latent space to a more meaningful weights between the nodes 
+    #self.dec_fc2 = torch.nn.Linear(latent_dim, 2*latent_dim)
+
+    #reshape 
     self.dec_convs = ModuleList()
     self.dec_convs.append(layer(2*latent_dim, hidden_channels[-1]))
     for i in range(len(hidden_channels)-1,0,-1):
@@ -110,11 +115,14 @@ class GraphAE(torch.nn.Module):
     return x
  
   def decode(self, z, edge_index):
-    x = torch.repeat_interleave(z, self.num_fixed_nodes, dim=0)
-    x = self.dec_fc1(x)
+    #x = torch.repeat_interleave(z, self.num_fixed_nodes, dim=0)
+    x = self.dec_fc1(z)
     x = torch.relu(x)
     x = self.dec_fc2(x)
     x = torch.relu(x)
+    batch_size = x.shape[0]
+    layer_size = x.shape[-1]
+    x = torch.reshape(x,(batch_size*self.num_fixed_nodes, int(layer_size/self.num_fixed_nodes)))
     for i_layer in range(self.num_dec_convs):
         x = self.dec_convs[i_layer](x,edge_index)
         x = F.relu(x)
