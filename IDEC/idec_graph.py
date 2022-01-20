@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright © dawnranger.
+# Starting code for iDEC from © dawnranger
+# The rest of development from © chernyavskaya 
 #
-# 2018-05-08 10:15 <dawnranger123@gmail.com>
 #
-# Distributed under terms of the MIT license.
 from __future__ import print_function, division
 import setGPU
 import os,sys
