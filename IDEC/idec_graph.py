@@ -86,7 +86,7 @@ def chamfer_loss(target, reco, batch):
     return  eucl, xy_idx, yx_idx
 
     
-def categorical_loss(target, reco,xy_idx, yx_idx,loss_fnc):
+def categorical_loss_cosine(target, reco,xy_idx, yx_idx,loss_fnc):
     get_x = target[xy_idx]
     get_y = reco[yx_idx]
 
@@ -97,6 +97,18 @@ def categorical_loss(target, reco,xy_idx, yx_idx,loss_fnc):
     loss = loss_fnc(reco,get_x,mask) + loss_fnc(get_y,target,mask)
 
     return loss
+
+def categorical_loss(target, reco,xy_idx, yx_idx,loss_fnc):
+    get_x = target[xy_idx].long()
+    get_y = reco[yx_idx]
+
+    #reco : get_x #reco - the closest input  to the output 
+    #target : get_y # :target - the closest output to the input
+    #first argument NN output, second argument is true labels
+
+    loss = loss_fnc(reco,get_x) #+ loss_fnc(get_y,target.long()) #output loss per graph node
+    return loss
+
 
 def pairwise_distance(x, y):
     if (x.shape[0] != y.shape[0]):
@@ -153,16 +165,16 @@ class GraphAE(torch.nn.Module):
     self.num_feats = input_shape[1]
     self.idx_cat = [0] #only pid for now
     self.idx_cont =  np.delete(np.arange(self.num_feats), self.idx_cat)
-    self.emb_szs = [[5,2]]  #list of lists of embeddings (pid : 5->2, charge : 3->2)
-    self.num_emb_feats = self.num_feats if len(self.idx_cat)==0 else self.num_feats - len(self.idx_cat) + sum(emb[-1] for emb in self.emb_szs)
 
-
-    #EMBEDDING of categorical variables (pid, charge)
-    self.embeddings = EmbeddingLayer(self.emb_szs)
+    #self.emb_szs = [[5,2]]  #list of lists of embeddings (pid : 5->2, charge : 3->2)
+    #self.num_emb_feats = self.num_feats if len(self.idx_cat)==0 else self.num_feats - len(self.idx_cat) + sum(emb[-1] for emb in self.emb_szs)
+    ##EMBEDDING of categorical variables (pid, charge)
+    #self.embeddings = EmbeddingLayer(self.emb_szs)
 
     # ENCODER 
-    self.enc_convs = ModuleList()   
-    self.enc_convs.append(layer(self.num_emb_feats, hidden_channels[0],activation=self.activation))
+    self.enc_convs = ModuleList()  
+    #self.enc_convs.append(layer(self.num_emb_feats, hidden_channels[0],activation=self.activation)) 
+    self.enc_convs.append(layer(self.num_feats, hidden_channels[0],activation=self.activation))
     for i in range(0,len(hidden_channels)-1):
         self.enc_convs.append(layer(hidden_channels[i], hidden_channels[i+1],activation=self.activation))
     self.num_enc_convs  = len(self.enc_convs)
@@ -182,18 +194,22 @@ class GraphAE(torch.nn.Module):
     self.dec_convs.append(layer(2*latent_dim, hidden_channels[-1],activation=self.activation))
     for i in range(len(hidden_channels)-1,0,-1):
         self.dec_convs.append(layer(hidden_channels[i], hidden_channels[i-1],activation=self.activation))
-    self.dec_convs.append(layer(hidden_channels[0], self.num_emb_feats ,activation=self.activation))
+    #self.dec_convs.append(layer(hidden_channels[0], self.num_emb_feats ,activation=self.activation))
+
+    self.dec_convs.append(layer(hidden_channels[0], self.num_feats+4 ,activation=self.activation))
+
+
     self.num_dec_convs  = len(self.dec_convs)
 
 
   def encode(self, x, edge_index,batch_index):
     #create learnable embedding of catgeorical variables
-    if len(self.idx_cat) > 0:
-        x_cat = x[:,self.idx_cat]
-        x_cont = x[:,self.idx_cont]
-        x_cat = self.embeddings(x_cat.long())
-        x = torch.cat([x_cat, x_cont], -1) 
-    self.embedded_input = x.clone()
+    #if len(self.idx_cat) > 0:
+    #    x_cat = x[:,self.idx_cat]
+    #    x_cont = x[:,self.idx_cont]
+    #    x_cat = self.embeddings(x_cat.long())
+    #    x = torch.cat([x_cat, x_cont], -1) 
+    #self.embedded_input = x.clone()
 
     # Obtain node embeddings 
     for i_layer in range(self.num_enc_convs):
@@ -226,6 +242,10 @@ class GraphAE(torch.nn.Module):
     ######
     for i_layer in range(self.num_dec_convs):
         x = self.dec_convs[i_layer](x,edge_index)
+    x_cat = x[:,0:5]
+    log_soft_max = nn.LogSoftmax(dim=-1)
+    x_cat = log_soft_max(x_cat)
+    x = torch.cat([x_cat,x[:,5:]], dim=-1)
     return x
  
   def forward(self,x, edge_index,batch_index):
@@ -324,14 +344,17 @@ def pretrain_ae(model):
 
             optimizer.zero_grad()
             x_bar, z = model(x,edge_index,batch_index)
-            x_embedded = model.embedded_input
+            #x_embedded = model.embedded_input
             #loss = F.mse_loss(x_bar, x) 
             #loss, xy_idx, yx_idx = chamfer_loss(x_embedded,x_bar,batch_index)
-            reco_loss, xy_idx, yx_idx  = chamfer_loss(x_embedded[:,2:],x_bar[:,2:],batch_index)
-            cos_emb_loss = torch.nn.CosineEmbeddingLoss(reduction='mean')  #CosineSimilarity()
-            pid_loss = categorical_loss(x_embedded[:,0:2],x_bar[:,0:2],xy_idx, yx_idx,cos_emb_loss)
+            reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,5:],batch_index)
+            #cos_emb_loss = torch.nn.CosineEmbeddingLoss(reduction='mean')  #CosineSimilarity()
+            #pid_loss = categorical_loss(x[:,0:1],x_bar[:,0:1],xy_idx, yx_idx,cos_emb_loss)
 
-            loss = reco_loss+pid_loss
+            nll_loss = nn.NLLLoss(reduction='mean',weight=pid_weight)
+            pid_loss = categorical_loss(x[:,0],x_bar[:,0:5],xy_idx, yx_idx,nll_loss) #target, reco
+
+            loss = reco_loss + pid_loss
             total_loss += loss.item()
             total_reco_loss += reco_loss.item()
             total_pid_loss += pid_loss.item()
@@ -437,12 +460,15 @@ def train_idec():
             batch_index = data.batch.to(device)
 
             x_bar, q, _ = model(x,edge_index,batch_index)
-            x_embedded = model.ae.embedded_input
+            #x_embedded = model.ae.embedded_input
 
             #reconstr_loss = F.mse_loss(x_bar, x)
-            reconstr_loss, xy_idx, yx_idx  = chamfer_loss(x_embedded[:,2:],x_bar[:,2:],batch_index)
-            cos_emb_loss = torch.nn.CosineEmbeddingLoss(reduction='mean')
-            pid_loss = categorical_loss(x_embedded[:,0:2],x_bar[:,0:2],xy_idx, yx_idx,cos_emb_loss)
+            reconstr_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,5:],batch_index)
+            #cos_emb_loss = torch.nn.CosineEmbeddingLoss(reduction='mean')
+            #pid_loss = categorical_loss(x[:,0:1],x_bar[:,0:1],xy_idx, yx_idx,cos_emb_loss)
+            nll_loss = nn.NLLLoss(reduction='mean',weight=pid_weight)
+            pid_loss = categorical_loss(x[:,0],x_bar[:,0:5],xy_idx, yx_idx,nll_loss) #target, reco
+
             kl_loss = F.kl_div(q.log(), p_all[i],reduction='batchmean')
             loss = args.gamma * kl_loss + reconstr_loss + pid_loss
 
@@ -473,7 +499,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', default=256, type=int)
     parser.add_argument('--latent_dim', default=5, type=int)
     parser.add_argument('--input_shape', default=[17,5], type=int)
-    parser.add_argument('--hidden_channels', default=[8, 12, 16, 20, 25, 30], type=int)   ## [8, 12, 16, 20, 25, 30 ]
+    parser.add_argument('--hidden_channels', default=[10, 12, 16, 20, 25, 30], type=int)   ## [8, 12, 16, 20, 25, 30 ]
     parser.add_argument('--pretrain_path', type=str, default='data_graph/graph_ae_pretrain.pkl') 
     parser.add_argument('--gamma',default=10.,type=float,help='coefficient of clustering loss')
     parser.add_argument('--update_interval', default=1, type=int)
@@ -517,6 +543,8 @@ if __name__ == "__main__":
          for x_jet,edge_index_jet,u_jet in zip(x,edge_index,y)]
     print('Dataset of {} events prepared'.format(tot_evt))
     dataset  = GraphDataset(datas)
+    #pid_weight = torch.tensor([1./0.52,1./0.37,1./0.025,1./0.016,1./0.06]).to(device)
+    pid_weight = torch.tensor([1.,1.4,20.,30.,9.]).to(device)
 
     print(args)
     train_idec()
