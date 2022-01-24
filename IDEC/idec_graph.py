@@ -106,7 +106,7 @@ def categorical_loss(target, reco,xy_idx, yx_idx,loss_fnc):
     #target : get_y # :target - the closest output to the input
     #first argument NN output, second argument is true labels
 
-    loss = loss_fnc(reco,get_x) #+ loss_fnc(get_y,target.long()) #output loss per graph node
+    loss = loss_fnc(reco,get_x) + loss_fnc(get_y,target.long()) #output loss per graph node
     return loss
 
 
@@ -544,7 +544,9 @@ if __name__ == "__main__":
     print('Dataset of {} events prepared'.format(tot_evt))
     dataset  = GraphDataset(datas)
     #pid_weight = torch.tensor([1./0.52,1./0.37,1./0.025,1./0.016,1./0.06]).to(device)
-    pid_weight = torch.tensor([1.,1.4,20.,30.,9.]).to(device)
+    #pid_weight = torch.tensor([1.,1.4,20.,30.,9.]).to(device)
+    pid_weight = torch.tensor([1.,1.4,10.,10.,10.]).to(device)
+    #pid_weight = torch.tensor([1.,1.4,5.,5.,5.]).to(device)
 
     print(args)
     train_idec()
