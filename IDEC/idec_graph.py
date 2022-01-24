@@ -22,24 +22,103 @@ from torch.nn.parameter import Parameter
 from torch.optim import Adam
 from torch.nn import Linear
 from torch.nn import ModuleList
+from torch.nn import Embedding
+from torch.autograd import Variable
 
 from scipy.sparse import csr_matrix
 from torch_geometric.nn import Sequential, GCNConv, EdgeConv, GATConv, GATv2Conv, global_mean_pool, DynamicEdgeConv, BatchNorm
 
-from torch_geometric.utils import from_scipy_sparse_matrix
+from torch_geometric.utils import from_scipy_sparse_matrix, to_dense_batch
+
 from torch_geometric.data import Data, Batch, DataLoader
 from utils import GraphDataset, cluster_acc
 from torch_scatter import scatter_mean,scatter_max
 
 import os.path as osp
-sys.path.append(os.path.abspath(os.path.join('../../ADgvae/')))
-import utils_torch.model_summary as summary
+sys.path.append(os.path.abspath(os.path.join('../../')))
+#sys.path.append(os.path.abspath(os.path.join('../')))
+import ADgvae.utils_torch.model_summary as summary
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+eps = 1e-12
 
+class EmbeddingLayer(nn.Module):
+    """
+    Embedding layer.
+    Automatically splits input Tensors based on embedding sizes;
+    then, embeds each feature separately and concatenates the output
+    back into a single outpuut Tensor.
+    """
+
+    def __init__(self, emb_szs):
+        super().__init__()
+        self.embeddings = nn.ModuleList([Embedding(in_sz, out_sz) for in_sz, out_sz in emb_szs])
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = [emb(x[..., i]) for i, emb in enumerate(self.embeddings)]
+        x = torch.cat(x, dim=-1)
+        return x
+
+
+def chamfer_loss(target, reco, batch):
+    x = to_dense_batch(target, batch)[0]
+    y = to_dense_batch(reco, batch)[0] 
+    dist = pairwise_distance(x,y)
+    # For every output value, find its closest input value; for every input value, find its closest output value.
+    min_dist_xy = torch.min(dist, dim = -1)  # Get min distance per row - Find the closest input to the output
+    min_dist_yx = torch.min(dist, dim = -2)  # Get min distance per column - Find the closest output to the input
+    eucl =  torch.sum(min_dist_xy.values + min_dist_yx.values)
+    batch_size = x.shape[0]
+    num_particles = x.shape[1]
+    eucl =  eucl/(batch_size*num_particles)
+
+    xy_idx = min_dist_xy.indices.clone()
+    yx_idx = min_dist_yx.indices.clone() 
+
+    aux_idx = num_particles * torch.arange(batch_size).to(device) #We create auxiliary indices to separate per batch of particles
+    aux_idx = aux_idx.view(batch_size, 1)
+    aux_idx = torch.repeat_interleave(aux_idx, num_particles, axis=-1)
+    xy_idx = xy_idx + aux_idx
+    yx_idx = yx_idx + aux_idx
+
+    xy_idx = xy_idx.reshape((batch_size*num_particles))
+    yx_idx = yx_idx.reshape((batch_size*num_particles))
+    return  eucl, xy_idx, yx_idx
+
+    
+def categorical_loss(target, reco,xy_idx, yx_idx,loss_fnc):
+    get_x = target[xy_idx]
+    get_y = reco[yx_idx]
+
+    #reco : get_x #reco - the closest input  to the output 
+    #target : get_y # :target - the closest output to the input
+    #first argument NN output, second argument is true labels
+    mask = Variable(torch.ones(get_y.shape[0]), requires_grad=False).to(device)
+    loss = loss_fnc(reco,get_x,mask) + loss_fnc(get_y,target,mask)
+
+    return loss
+
+def pairwise_distance(x, y):
+    if (x.shape[0] != y.shape[0]):
+        raise ValueError(f"The batch size of x and y are not equal! x.shape[0] is {x.shape[0]}, whereas y.shape[0] is {y.shape[0]}!")
+    if (x.shape[-1] != y.shape[-1]):
+        raise ValueError(f"Feature dimension of x and y are not equal! x.shape[-1] is {x.shape[-1]}, whereas y.shape[-1] is {y.shape[-1]}!")
+
+
+    batch_size = x.shape[0]
+    num_row = x.shape[1]
+    num_col = y.shape[1]
+    vec_dim = x.shape[-1]
+
+    x1 = x.repeat(1, 1, num_col).view(batch_size, -1, num_col, vec_dim).to(device)
+    y1 = y.repeat(1, num_row, 1).view(batch_size, num_row, -1, vec_dim).to(device)
+
+    dist = torch.norm(x1 - y1 + eps, dim=-1)
+
+    return dist
 
 class EdgeConvLayer(nn.Module):   
-    def __init__(self, in_dim, out_dim, dropout=0.1, batch_norm=True, activation=nn.ReLU(), aggr='mean'):
+    def __init__(self, in_dim, out_dim, dropout=0.1, batch_norm=True, activation=nn.LeakyReLU(), aggr='mean'):
         super().__init__()
         self.activation = activation
         self.batch_norm = batch_norm
@@ -63,24 +142,33 @@ class EdgeConvLayer(nn.Module):
         return h
 
 class GraphAE(torch.nn.Module):
-  def __init__(self, input_shape, hidden_channels,latent_dim):
+  def __init__(self, input_shape, hidden_channels,latent_dim,activation=nn.LeakyReLU(negative_slope=0.5)):
     super(GraphAE, self).__init__()
 
     #Which main block to use for the architecture
-    layer = EdgeConvLayer # EdgeConvLayer #GCNConv 
+    layer = EdgeConvLayer # EdgeConvLayer #GCNConv
+    self.activation = activation 
+    #self.batchnorm = nn.BatchNorm1d(input_shape[-1])
     self.num_fixed_nodes = input_shape[0]
     self.num_feats = input_shape[1]
+    self.idx_cat = [0] #only pid for now
+    self.idx_cont =  np.delete(np.arange(self.num_feats), self.idx_cat)
+    self.emb_szs = [[5,2]]  #list of lists of embeddings (pid : 5->2, charge : 3->2)
+    self.num_emb_feats = self.num_feats if len(self.idx_cat)==0 else self.num_feats - len(self.idx_cat) + sum(emb[-1] for emb in self.emb_szs)
+
+
+    #EMBEDDING of categorical variables (pid, charge)
+    self.embeddings = EmbeddingLayer(self.emb_szs)
 
     # ENCODER 
     self.enc_convs = ModuleList()   
-    self.enc_convs.append(layer(self.num_feats, hidden_channels[0]))
+    self.enc_convs.append(layer(self.num_emb_feats, hidden_channels[0],activation=self.activation))
     for i in range(0,len(hidden_channels)-1):
-        self.enc_convs.append(layer(hidden_channels[i], hidden_channels[i+1]))
-    self.enc_convs.append(layer(hidden_channels[-1], latent_dim))
+        self.enc_convs.append(layer(hidden_channels[i], hidden_channels[i+1],activation=self.activation))
     self.num_enc_convs  = len(self.enc_convs)
     #scatter_mean from batch_size x num_fixed_nodes -> batch_size
-    self.enc_fc1 = torch.nn.Linear(2*latent_dim, 2*latent_dim)  #check that the weights are not 1., otherwise remove
-    self.enc_fc2 = torch.nn.Linear(2*latent_dim, latent_dim) 
+    self.enc_fc1 = torch.nn.Linear(2*hidden_channels[-1], hidden_channels[-1])  
+    self.enc_fc2 = torch.nn.Linear(hidden_channels[-1], latent_dim) 
 
     # DECODER
     self.dec_fc1 = torch.nn.Linear(latent_dim, 2*latent_dim)
@@ -91,44 +179,58 @@ class GraphAE(torch.nn.Module):
 
     #reshape 
     self.dec_convs = ModuleList()
-    self.dec_convs.append(layer(2*latent_dim, hidden_channels[-1]))
+    self.dec_convs.append(layer(2*latent_dim, hidden_channels[-1],activation=self.activation))
     for i in range(len(hidden_channels)-1,0,-1):
-        self.dec_convs.append(layer(hidden_channels[i], hidden_channels[i-1]))
-    self.dec_convs.append(layer(hidden_channels[0], self.num_feats))
+        self.dec_convs.append(layer(hidden_channels[i], hidden_channels[i-1],activation=self.activation))
+    self.dec_convs.append(layer(hidden_channels[0], self.num_emb_feats ,activation=self.activation))
     self.num_dec_convs  = len(self.dec_convs)
 
 
   def encode(self, x, edge_index,batch_index):
+    #create learnable embedding of catgeorical variables
+    if len(self.idx_cat) > 0:
+        x_cat = x[:,self.idx_cat]
+        x_cont = x[:,self.idx_cont]
+        x_cat = self.embeddings(x_cat.long())
+        x = torch.cat([x_cat, x_cont], -1) 
+    self.embedded_input = x.clone()
+
     # Obtain node embeddings 
     for i_layer in range(self.num_enc_convs):
         x = self.enc_convs[i_layer](x,edge_index)
-        x = F.relu(x)
     #reduce from all the nodes in the graph to 1 per graph
     x_mean = scatter_mean(x, batch_index, dim=0)
     x_max = scatter_max(x, batch_index, dim=0)[0]
     x = torch.cat((x_mean, x_max), dim=1)
     x = self.enc_fc1(x)
-    x = F.relu(x)
+    x = self.activation(x)
     x = self.enc_fc2(x)
-    x = F.relu(x)
+    x = self.activation(x)
     return x
  
   def decode(self, z, edge_index):
     #x = torch.repeat_interleave(z, self.num_fixed_nodes, dim=0)
     x = self.dec_fc1(z)
-    x = torch.relu(x)
+    x = self.activation(x)
     x = self.dec_fc2(x)
-    x = torch.relu(x)
+    x = self.activation(x)
     batch_size = x.shape[0]
     layer_size = x.shape[-1]
+    #x = torch.reshape(x,(batch_size*self.num_fixed_nodes, int(layer_size/self.num_fixed_nodes)))
+    ######
+    #try with permutation
+    x = torch.reshape(x,(batch_size,self.num_fixed_nodes, int(layer_size/self.num_fixed_nodes)))
+    idx = torch.randint(self.num_fixed_nodes, size=(batch_size, self.num_fixed_nodes)).to(x.get_device())
+    x = x.gather(dim=1, index=idx.unsqueeze(-1).expand(x.shape))
     x = torch.reshape(x,(batch_size*self.num_fixed_nodes, int(layer_size/self.num_fixed_nodes)))
+    ######
     for i_layer in range(self.num_dec_convs):
         x = self.dec_convs[i_layer](x,edge_index)
-        x = F.relu(x)
     return x
  
   def forward(self,x, edge_index,batch_index):
     #x, edge_index = data.x, data.edge_index # x, edge_index, batch = data.x, data.edge_index, data.batch
+    #x = self.batchnorm(x)
     z = self.encode(x, edge_index,batch_index)
     x_bar = self.decode(z, edge_index)
     return x_bar, z
@@ -214,7 +316,7 @@ def pretrain_ae(model):
     print(model)
     optimizer = Adam(model.parameters(), lr=args.lr)
     for epoch in range(args.n_epochs):
-        total_loss = 0.
+        total_loss, total_reco_loss, total_pid_loss = 0.,0.,0.
         for i, data in enumerate(train_loader):
             x = data.x.to(device)
             edge_index = data.edge_index.to(device)
@@ -222,14 +324,23 @@ def pretrain_ae(model):
 
             optimizer.zero_grad()
             x_bar, z = model(x,edge_index,batch_index)
-            loss = F.mse_loss(x_bar, x) 
+            x_embedded = model.embedded_input
+            #loss = F.mse_loss(x_bar, x) 
+            #loss, xy_idx, yx_idx = chamfer_loss(x_embedded,x_bar,batch_index)
+            reco_loss, xy_idx, yx_idx  = chamfer_loss(x_embedded[:,2:],x_bar[:,2:],batch_index)
+            cos_emb_loss = torch.nn.CosineEmbeddingLoss(reduction='mean')  #CosineSimilarity()
+            pid_loss = categorical_loss(x_embedded[:,0:2],x_bar[:,0:2],xy_idx, yx_idx,cos_emb_loss)
+
+            loss = reco_loss+pid_loss
             total_loss += loss.item()
+            total_reco_loss += reco_loss.item()
+            total_pid_loss += pid_loss.item()
 
             loss.backward()
             optimizer.step()
 
-        print("epoch {} loss={:.4f}".format(epoch,
-                                            total_loss / (i + 1)))
+        print("epoch {} loss={:.4f}, reco loss={:.4f}, pid loss={:.4f}".format(epoch,
+                                            total_loss / (i + 1), total_reco_loss/(i+1),total_pid_loss/(i+1)))
         torch.save(model.state_dict(), args.pretrain_path)
     print("model saved to {}.".format(args.pretrain_path))
 
@@ -319,25 +430,30 @@ def train_idec():
                 break
 
         #training part
-        total_loss,total_kl_loss,total_reco_loss  = 0.,0.,0.
+        total_loss,total_kl_loss,total_reco_loss,total_pid_loss  = 0.,0.,0.,0.
         for i, data in enumerate(train_loader):
             x = data.x.to(device)
             edge_index = data.edge_index.to(device)
             batch_index = data.batch.to(device)
 
             x_bar, q, _ = model(x,edge_index,batch_index)
+            x_embedded = model.ae.embedded_input
 
-            reconstr_loss = F.mse_loss(x_bar, x)
-            kl_loss = F.kl_div(q.log(), p_all[i])
-            loss = args.gamma * kl_loss + reconstr_loss
+            #reconstr_loss = F.mse_loss(x_bar, x)
+            reconstr_loss, xy_idx, yx_idx  = chamfer_loss(x_embedded[:,2:],x_bar[:,2:],batch_index)
+            cos_emb_loss = torch.nn.CosineEmbeddingLoss(reduction='mean')
+            pid_loss = categorical_loss(x_embedded[:,0:2],x_bar[:,0:2],xy_idx, yx_idx,cos_emb_loss)
+            kl_loss = F.kl_div(q.log(), p_all[i],reduction='batchmean')
+            loss = args.gamma * kl_loss + reconstr_loss + pid_loss
 
             optimizer.zero_grad()
             total_loss += loss.item()
             total_kl_loss += kl_loss.item()
             total_reco_loss += reconstr_loss.item()
+            total_pid_loss += pid_loss.item()
             loss.backward()
             optimizer.step()
-        print("epoch {} : total loss={:.4f}, kl loss={:.4f}, reco loss={:.4f} ".format(epoch, total_loss / (i + 1), total_kl_loss / (i + 1) , total_reco_loss / (i + 1)))
+        print("epoch {} : total loss={:.4f}, kl loss={:.4f}, reco loss={:.4f}, pid loss={:.4f} ".format(epoch, total_loss / (i + 1), total_kl_loss / (i + 1) , total_reco_loss / (i + 1), total_pid_loss/(i+1)))
         if epoch==args.n_epochs-1 :
             torch.save(model.state_dict(), args.pretrain_path.replace('.pkl','_fullmodel_num_clust_{}.pkl'.format(args.n_clusters)))
 
@@ -355,11 +471,11 @@ if __name__ == "__main__":
     parser.add_argument('--lr', type=float, default=0.001)
     parser.add_argument('--n_clusters', default=5, type=int)
     parser.add_argument('--batch_size', default=256, type=int)
-    parser.add_argument('--latent_dim', default=10, type=int)
+    parser.add_argument('--latent_dim', default=5, type=int)
     parser.add_argument('--input_shape', default=[17,5], type=int)
-    parser.add_argument('--hidden_channels', default=[10,20,30,20,10,2], type=int)   ## [8, 12, 16, 20, 25, 30 ]
+    parser.add_argument('--hidden_channels', default=[8, 12, 16, 20, 25, 30], type=int)   ## [8, 12, 16, 20, 25, 30 ]
     parser.add_argument('--pretrain_path', type=str, default='data_graph/graph_ae_pretrain.pkl') 
-    parser.add_argument('--gamma',default=0.1,type=float,help='coefficient of clustering loss')
+    parser.add_argument('--gamma',default=10.,type=float,help='coefficient of clustering loss')
     parser.add_argument('--update_interval', default=1, type=int)
     parser.add_argument('--tol', default=0.001, type=float)
     parser.add_argument('--n_epochs',default=100, type=int)
@@ -370,8 +486,10 @@ if __name__ == "__main__":
     print(device)
     #device='cpu'
 
-
-    #Try : update hidden channels, try Elu (lecky relu)
+    #try to add embedding layer for particle type
+    #loss function for particle type should be different if no embedding is used (cross entropy)
+    #think about normalization and whether to separate 0
+    #go back to trying activation function 
 
     DATA_PATH = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/AnomalyClustering/inputs/'
     TRAIN_NAME = 'background_chan3_passed_ae_l1.h5'
