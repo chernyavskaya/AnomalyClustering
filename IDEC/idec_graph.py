@@ -42,6 +42,7 @@ import ADgvae.utils_torch.model_summary as summary
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 eps = 1e-12
 PI = math.pi
+TWOPI = 2*math.pi
 
 class EmbeddingLayer(nn.Module):
     """
@@ -61,10 +62,27 @@ class EmbeddingLayer(nn.Module):
         return x
 
 
-def chamfer_loss(target, reco, batch):
+def make_adjacencies(particles):
+    real_p_mask = particles[:,:,1] > 0. # construct mask for real particles
+    adjacencies = (real_p_mask[:,:,np.newaxis] * real_p_mask[:,np.newaxis,:]).astype('float32')
+    return adjacencies
+
+
+def cycle_by_2pi(in_tensor):
+    in_tensor  = torch.where(in_tensor >= PI, in_tensor-TWOPI, in_tensor)
+    in_tensor  = torch.where(in_tensor < -PI, in_tensor+TWOPI, in_tensor)
+    return in_tensor
+
+
+def chamfer_loss(target, reco, batch,phi_idx=1):
     x = to_dense_batch(target, batch)[0]
     y = to_dense_batch(reco, batch)[0] 
-    dist = pairwise_distance(x,y)
+    #dist = pairwise_distance(x,y)
+    diff = pairwise_distance(x,y)
+    #phi is idx = 1
+    diff[:,:,:,phi_idx] = cycle_by_2pi(diff[:,:,:,phi_idx])
+    dist = torch.norm(diff, dim=-1,p=2) #x1 - y1 + eps
+
     # For every output value, find its closest input value; for every input value, find its closest output value.
     min_dist_xy = torch.min(dist, dim = -1)  # Get min distance per row - Find the closest input to the output
     min_dist_yx = torch.min(dist, dim = -2)  # Get min distance per column - Find the closest output to the input
@@ -115,11 +133,33 @@ def huber_loss(target, reco,xy_idx, yx_idx):
     get_x = target[xy_idx]
     get_y = reco[yx_idx]
 
-    huber = torch.nn.HuberLoss(delta=5.0)
-    loss = 2*(huber(reco,get_x) + huber(get_y,target)) #2* because in Huber loss there is a factor 1/2
+    #loss_fnc = nn.MSELoss()
+    loss_fnc = torch.nn.HuberLoss(delta=10.0)
+    loss = 2*(loss_fnc(reco,get_x) + loss_fnc(get_y,target)) #2* because in Huber loss there is a factor 1/2
     return loss
 
 
+class CustomHuberLoss:
+    def __init__(self, delta = 1.0, reduction ='mean' ):
+        self.delta = delta
+        self.reduction = reduction
+
+    def __call__(self, difference):
+        errors = torch.abs(difference)
+
+        mask = errors < self.delta
+        res = (0.5 * mask * (torch.pow(errors,2))) + ~mask *(delta*(errors-0.5*delta))
+        if self.reduction=='mean':
+            return torch.mean(res)
+        else:
+            return torch.sum(res)
+
+def met_loss(target, reco, phi_idx=-1):
+    diff[:,:,:,phi_idx] = cycle_by_2pi(diff[:,:,:,phi_idx])
+
+    loss_fnc = CustomHuberLoss(delta=10.0)
+    loss = 2*(loss_fnc(diff)) #2* because in Huber loss there is a factor 1/2
+    return loss
 
 
 def pairwise_distance(x, y):
@@ -137,8 +177,9 @@ def pairwise_distance(x, y):
     x1 = x.repeat(1, 1, num_col).view(batch_size, -1, num_col, vec_dim).to(device)
     y1 = y.repeat(1, num_row, 1).view(batch_size, num_row, -1, vec_dim).to(device)
 
-    dist = torch.norm(x1 - y1 + eps, dim=-1,p=2)
-    return dist
+    diff = x1 - y1
+    return diff    
+
 
 class EdgeConvLayer(nn.Module):   
     def __init__(self, in_dim, out_dim, dropout=0.0, batch_norm=True, activation=nn.LeakyReLU(negative_slope=0.3), aggr='mean'):
@@ -165,7 +206,7 @@ class EdgeConvLayer(nn.Module):
         return h
 
 class GraphAE(torch.nn.Module):
-  def __init__(self, input_shape, hidden_channels,latent_dim,activation=nn.ReLU()):#nn.LeakyReLU(negative_slope=0.3)):
+  def __init__(self, input_shape, hidden_channels,latent_dim,activation=nn.LeakyReLU(negative_slope=0.3),input_shape_global = 2):
     super(GraphAE, self).__init__()
 
     #Which main block to use for the architecture
@@ -173,6 +214,8 @@ class GraphAE(torch.nn.Module):
     self.activation = activation 
     #self.batchnorm = nn.BatchNorm1d(input_shape[-1])
     self.num_fixed_nodes = input_shape[0]
+    self.input_shape_global = input_shape_global
+    self.hidden_global = 4*input_shape_global
     self.num_feats = input_shape[1]
     self.num_pid_classes = 4
     self.idx_cat = [0] #only pid for now
@@ -193,11 +236,13 @@ class GraphAE(torch.nn.Module):
         self.enc_convs.append(layer(hidden_channels[i], hidden_channels[i+1],activation=self.activation))
     self.num_enc_convs  = len(self.enc_convs)
     #scatter_mean from batch_size x num_fixed_nodes -> batch_size
-    self.enc_fc1 = torch.nn.Linear(2*hidden_channels[-1], hidden_channels[-1])  
-    self.enc_fc2 = torch.nn.Linear(hidden_channels[-1], latent_dim) 
+    self.enc_fc1 = torch.nn.Linear(2*hidden_channels[-1], hidden_channels[-1]) 
+    self.enc_met_fc1 = torch.nn.Linear(self.input_shape_global, self.hidden_global)  
+    self.enc_fc2 = torch.nn.Linear(hidden_channels[-1]+self.hidden_global, latent_dim) 
 
     # DECODER
-    self.dec_fc1 = torch.nn.Linear(latent_dim, 2*latent_dim)
+    self.dec_fc1 = torch.nn.Linear(latent_dim, 2*latent_dim+self.hidden_global)
+    self.dec_met_fc1 = torch.nn.Linear(self.hidden_global, self.input_shape_global)
     self.dec_fc2 = torch.nn.Linear(2*latent_dim, 2*latent_dim*self.num_fixed_nodes) #to map from tiled (batch_size x num_fixed_nodes) x latent space to a more meaningful weights between the nodes 
     #upsample from batch_size -> batch_size x num_fixed_nodes 
     #self.dec_fc1 = torch.nn.Linear(latent_dim, latent_dim) #to map from tiled (batch_size x num_fixed_nodes) x latent space to a more meaningful weights between the nodes 
@@ -214,7 +259,8 @@ class GraphAE(torch.nn.Module):
     self.num_dec_convs  = len(self.dec_convs)
 
 
-  def encode(self, x, edge_index,batch_index):
+  def encode(self, data):
+    x,x_met,edge_index, batch_index = data.x,data.x_met.reshape((-1,self.input_shape_global)), data.edge_index, data.batch
     #create learnable embedding of catgeorical variables
     #if len(self.idx_cat) > 0:
     #    x_cat = x[:,self.idx_cat]
@@ -222,6 +268,10 @@ class GraphAE(torch.nn.Module):
     #    x_cat = self.embeddings(x_cat.long())
     #    x = torch.cat([x_cat, x_cont], -1) 
     #self.embedded_input = x.clone()
+
+    #Treat global graph features 
+    x_met = self.enc_met_fc1(x_met)
+    x_met = self.activation(x_met)
 
     # Obtain node embeddings 
     for i_layer in range(self.num_enc_convs):
@@ -232,6 +282,10 @@ class GraphAE(torch.nn.Module):
     x = torch.cat((x_mean, x_max), dim=1)
     x = self.enc_fc1(x)
     x = self.activation(x)
+
+    print(x_met.shape,x.shape)
+    x = torch.cat((x_met,x),dim=-1)
+    print(x.shape)
     x = self.enc_fc2(x)
     #no activation function before latent space
     return x
@@ -240,6 +294,14 @@ class GraphAE(torch.nn.Module):
     #x = torch.repeat_interleave(z, self.num_fixed_nodes, dim=0)
     x = self.dec_fc1(z)
     x = self.activation(x)
+
+    x_met = x[0:self.hidden_global]
+    x_met = self.dec_met_fc1(x_met)
+    x_met[0:2] = F.relu(x_met[0:2])
+    x_met[2:] = 2*PI*torch.tanh(x_met[2:])
+
+    x = x[self.hidden_global:]
+
     x = self.dec_fc2(x)
     x = self.activation(x)
     batch_size = x.shape[0]
@@ -262,20 +324,21 @@ class GraphAE(torch.nn.Module):
     x_phi =  x[:,[self.num_pid_classes-1+self.phi_idx]]
     x_energy_pt = x[:,[self.num_pid_classes-1+self.energy_idx,self.num_pid_classes-1+self.pt_idx]]
     x_phi = 2*PI*torch.tanh(x_phi)
-    x_eta = 3.8*torch.tanh(x_eta)
+    #x_phi = cycle_by_2pi(x_phi)
+    x_eta = 4*torch.tanh(x_eta) #eta is restricted at 2.8, but if scaled with 2.8 might be too restrictive 
     x_energy_pt = F.relu(x_energy_pt)
     #x_energy_pt = F.leaky_relu(x_energy_pt, negative_slope=0.1)
     #x = torch.cat([x_cat,x[:,self.num_pid_classes:]], dim=-1) 
     x = torch.cat([x_cat,x_energy_pt,x_eta,x_phi], dim=-1) 
 
-    return x
+    return x,x_met
  
-  def forward(self,x, edge_index,batch_index):
-    #x, edge_index = data.x, data.edge_index # x, edge_index, batch = data.x, data.edge_index, data.batch
+  def forward(self,data):
+    x,x_met,edge_index, batch_index = data.x,data.x_met.reshape((-1,self.input_shape_global)), data.edge_index, data.batch
     #x = self.batchnorm(x)
-    z = self.encode(x, edge_index,batch_index)
-    x_bar = self.decode(z, edge_index)
-    return x_bar, z
+    z = self.encode(data)
+    x_bar,x_met_bar = self.decode(z, edge_index)
+    return x_bar,x_met_bar, z
 
 
 
@@ -309,18 +372,18 @@ class IDEC(nn.Module):
         self.ae.to(device)
         print('load pretrained ae from', path)
 
-    def forward(self, x,edge_index,batch_index):
-        x_bar, z = self.ae(x,edge_index,batch_index)
+    def forward(self, data):
+        x_bar, z, x_met_bar = self.ae(x,data)
         # cluster
         q = 1.0 / (1.0 + torch.sum(
             torch.pow(z.unsqueeze(1) - self.cluster_layer, 2), 2) / self.alpha)
         q = q.pow((self.alpha + 1.0) / 2.0)
         q = (q.t() / torch.sum(q, 1)).t()
-        return x_bar, q, z
+        return x_bar, x_met_bar, q, z
 
-    def clustering(self,mbk,x,edge_index,batch_index):
+    def clustering(self,mbk,data):
         self.eval()
-        _,pred_labels_ae = self.ae(x,edge_index,batch_index)
+        _,_,pred_labels_ae = self.ae(data)
         pred_labels_ae = pred_labels_ae.data.cpu().numpy()
         pred_labels = mbk.partial_fit(pred_labels_ae) #seems we can only get a centre from batch
         self.cluster_centers = mbk.cluster_centers_ #keep the cluster centers
@@ -332,8 +395,8 @@ class IDEC(nn.Module):
 
     def validateOnCompleteTestData(self,test_loader):
         self.eval()
-        pred_labels = np.array([self.forward(d.x.to(device),d.edge_index.to(device),d.batch.to(device))[1].data.cpu().numpy().argmax(1) for i,d in enumerate(test_loader)]) #argmax(1) #index (cluster nubmber) of the cluster with the highest probability q.
-        latent_pred = np.array([self.forward(d.x.to(device),d.edge_index.to(device),d.batch.to(device))[2].data.cpu().numpy() for i,d in enumerate(test_loader)])
+        pred_labels = np.array([self.forward(d.to(device))[2].data.cpu().numpy().argmax(1) for i,d in enumerate(test_loader)]) #argmax(1) #index (cluster nubmber) of the cluster with the highest probability q.
+        latent_pred = np.array([self.forward(d.to(device))[3].data.cpu().numpy() for i,d in enumerate(test_loader)])
         true_labels = np.array([d.y.cpu().numpy() for i,d in enumerate(test_loader)])
         #reshape
         pred_labels = np.reshape(pred_labels,pred_labels.shape[0]*pred_labels.shape[1])
@@ -358,35 +421,42 @@ def pretrain_ae(model):
     print(model)
     optimizer = Adam(model.parameters(), lr=args.lr)
     for epoch in range(args.n_epochs):
-        total_loss, total_reco_loss, total_pid_loss, total_energy_loss = 0.,0.,0.,0.
+        total_loss, total_reco_loss, total_pid_loss, total_energy_loss, total_met_loss = 0.,0.,0.,0.,0.
         for i, data in enumerate(train_loader):
+            data = data.to(device)
             x = data.x.to(device)
-            edge_index = data.edge_index.to(device)
+            x_met = data.x_met.reshape((-1,model.input_shape_global)).to(device)
             batch_index = data.batch.to(device)
 
             optimizer.zero_grad()
-            x_bar, z = model(x,edge_index,batch_index)
+            x_bar,x_met_bar, z = model(data)
             #x_embedded = model.embedded_input
             #loss = F.mse_loss(x_bar, x) 
             #loss, xy_idx, yx_idx = chamfer_loss(x_embedded,x_bar,batch_index)
             #reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.ae.num_pid_classes:],batch_index)
-            reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,[model.eta_idx,model.phi_idx]],x_bar[:,[model.num_pid_classes-1 + model.eta_idx, model.num_pid_classes-1 + model.phi_idx]],batch_index)
+            #reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,[model.eta_idx,model.phi_idx]],x_bar[:,[model.num_pid_classes-1 + model.eta_idx, model.num_pid_classes-1 + model.phi_idx]],batch_index)
 
-            energy_loss  = huber_loss(x[:,[model.energy_idx,model.pt_idx]],x_bar[:,[model.num_pid_classes-1 + model.energy_idx, model.num_pid_classes-1 + model.pt_idx]],xy_idx, yx_idx)
+            reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.num_pid_classes:],batch_index,phi_idx = -1)
+
+            met_loss = met_loss(x_met, x_met_bar)
+
+            #energy_loss  = huber_loss(x[:,[model.energy_idx,model.pt_idx]],x_bar[:,[model.num_pid_classes-1 + model.energy_idx, model.num_pid_classes-1 + model.pt_idx]],xy_idx, yx_idx)
 
             nll_loss = nn.NLLLoss(reduction='mean',weight=pid_weight)
             pid_loss = categorical_loss(x[:,0],x_bar[:,0:model.num_pid_classes],xy_idx, yx_idx,nll_loss) #target, reco
 
-            loss = reco_loss + energy_loss_weight*energy_loss + pid_loss_weight*pid_loss
+            loss = reco_loss  + pid_loss_weight*pid_loss  #+ energy_loss_weight*energy_loss
             total_loss += loss.item()
             total_reco_loss += reco_loss.item()
             total_pid_loss += pid_loss.item()
-            total_energy_loss += energy_loss.item()
+            total_met_loss += met_loss.item()
+            #total_energy_loss += energy_loss.item()
+            total_energy_loss += 0. 
 
             loss.backward()
             optimizer.step()
 
-        print("epoch {} : total loss={:.4f}, reco loss={:.4f}, pid loss={:.4f}, energy loss={:.4f} ".format(epoch, total_loss / (i + 1) , total_reco_loss / (i + 1), total_pid_loss/(i+1), total_energy_loss/(i+1)))
+        print("epoch {} : total loss={:.4f}, reco loss={:.4f}, pid loss={:.4f}, energy loss={:.4f}, met loss={:.4f}  ".format(epoch, total_loss / (i + 1) , total_reco_loss / (i + 1), total_pid_loss/(i+1), total_energy_loss/(i+1),total_met_loss/(i+1)))
 
         torch.save(model.state_dict(), args.pretrain_path)
     print("model saved to {}.".format(args.pretrain_path))
@@ -418,10 +488,8 @@ def train_idec():
         #Full k-means if dataset can fit in memeory (better cluster initialization and faster convergence of the model)
         full_dataset_loader = DataLoader(dataset, batch_size=len(dataset), shuffle=True,drop_last=True) #,num_workers=5
         for i, data in enumerate(full_dataset_loader):
-            x = data.x.to(device)
-            edge_index = data.edge_index.to(device)
-            batch_index = data.batch.to(device)
-            _, hidden = model.ae(x,edge_index,batch_index)
+            data = data.to(device)
+            _,_, hidden = model.ae(data)
             kmeans = KMeans(n_clusters=args.n_clusters, n_init=20)
             y_pred = kmeans.fit_predict(hidden.data.cpu().numpy())
             model.cluster_layer.data = torch.tensor(kmeans.cluster_centers_).to(device)
@@ -432,26 +500,22 @@ def train_idec():
         #step 1 - get cluster center from batch
         #here we are using minibatch kmeans to be able to cope with larger dataset.
         for i, data in enumerate(train_loader):
-            x = data.x.to(device)
-            edge_index = data.edge_index.to(device)
-            batch_index = data.batch.to(device)
-            model.clustering(mbk,x,edge_index,batch_index)
+            data = data.to(device)
+            model.clustering(mbk,data)
 
     pred_labels_last = 0
     delta_label = 1e4
     model.train()
-    for epoch in range(1):#range(args.n_epochs):
+    for epoch in range(1):#:range(args.n_epochs):
 
         #evaluation part
         if epoch % args.update_interval == 0:
 
             p_all = []
             for i, data in enumerate(train_loader):
-                x = data.x.to(device)
-                edge_index = data.edge_index.to(device)
-                batch_index = data.batch.to(device)
+                data = data.to(device)
 
-                _, tmp_q_i, _ = model(x,edge_index,batch_index)
+                _,_, tmp_q_i, _ = model(data)
                 tmp_q_i = tmp_q_i.data
                 p = target_distribution(tmp_q_i)
                 p_all.append(p)
@@ -477,13 +541,14 @@ def train_idec():
                 break
 
         #training part
-        total_loss,total_kl_loss,total_reco_loss,total_pid_loss,total_energy_loss  = 0.,0.,0.,0.,0.
+        total_loss,total_kl_loss,total_reco_loss,total_pid_loss,total_energy_loss,total_met_loss  = 0.,0.,0.,0.,0.,0.
         for i, data in enumerate(train_loader):
+            data = data.to(device)
             x = data.x.to(device)
-            edge_index = data.edge_index.to(device)
+            x_met = data.x_met.reshape((-1,model.ae.input_shape_global)).to(device)
             batch_index = data.batch.to(device)
 
-            x_bar, q, _ = model(x,edge_index,batch_index)
+            x_bar, x_met_bar, q, _ = model(data)
             #x_embedded = model.ae.embedded_input
 
             #reconstr_loss = F.mse_loss(x_bar, x)
@@ -494,25 +559,32 @@ def train_idec():
             #pid_loss = categorical_loss(x[:,0],x_bar[:,0:model.ae.num_pid_classes],xy_idx, yx_idx,nll_loss) #target, reco
 
 
-            reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,[model.ae.eta_idx,model.ae.phi_idx]],x_bar[:,[model.ae.num_pid_classes-1 + model.ae.eta_idx, model.ae.num_pid_classes-1 + model.ae.phi_idx]],batch_index)
+            #reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,[model.ae.eta_idx,model.ae.phi_idx]],x_bar[:,[model.ae.num_pid_classes-1 + model.ae.eta_idx, model.ae.num_pid_classes-1 + model.ae.phi_idx]],batch_index)
+            
+            reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.ae.num_pid_classes:],batch_index,phi_idx = -1)
 
-            energy_loss  = huber_loss(x[:,[model.ae.energy_idx,model.ae.pt_idx]],x_bar[:,[model.ae.num_pid_classes-1 + model.ae.energy_idx, model.ae.num_pid_classes-1 + model.ae.pt_idx]],xy_idx, yx_idx)
+            met_loss = met_loss(x_met, x_met_bar)
+
+            #energy_loss  = huber_loss(x[:,[model.ae.energy_idx,model.ae.pt_idx]],x_bar[:,[model.ae.num_pid_classes-1 + model.ae.energy_idx, model.ae.num_pid_classes-1 + model.ae.pt_idx]],xy_idx, yx_idx)
 
             nll_loss = nn.NLLLoss(reduction='mean',weight=pid_weight)
             pid_loss = categorical_loss(x[:,0],x_bar[:,0:model.ae.num_pid_classes],xy_idx, yx_idx,nll_loss) #target, reco
 
             kl_loss = F.kl_div(q.log(), p_all[i],reduction='batchmean')
-            loss = args.gamma * kl_loss + reco_loss + energy_loss_weight*energy_loss + pid_loss_weight*pid_loss
+            loss = args.gamma * kl_loss + reco_loss + pid_loss_weight*pid_loss + met_loss_weight*met_loss#+ energy_loss_weight*energy_loss 
 
             optimizer.zero_grad()
             total_loss += loss.item()
             total_kl_loss += kl_loss.item()
             total_reco_loss += reco_loss.item()
             total_pid_loss += pid_loss.item()
-            total_energy_loss += energy_loss.item()
+            #total_energy_loss += energy_loss.item()
+            total_energy_loss += 0.
+            total_met_loss = met_loss.item()
+
             loss.backward()
             optimizer.step()
-        print("epoch {} : total loss={:.4f}, kl loss={:.4f}, reco loss={:.4f}, pid loss={:.4f}, energy loss={:.4f} ".format(epoch, total_loss / (i + 1), total_kl_loss / (i + 1) , total_reco_loss / (i + 1), total_pid_loss/(i+1), total_energy_loss/(i+1)))
+        print("epoch {} : total loss={:.4f}, kl loss={:.4f}, reco loss={:.4f}, pid loss={:.4f}, energy loss={:.4f}, met loss={:.4f} ".format(epoch, total_loss / (i + 1), total_kl_loss / (i + 1) , total_reco_loss / (i + 1), total_pid_loss/(i+1), total_energy_loss/(i+1), total_met_loss/(i+1)))
         if epoch==args.n_epochs-1 :
             torch.save(model.state_dict(), args.pretrain_path.replace('.pkl','_fullmodel_num_clust_{}.pkl'.format(args.n_clusters)))
         torch.save(model.state_dict(), args.pretrain_path.replace('.pkl','_fullmodel_num_clust_{}.pkl'.format(args.n_clusters)))
@@ -558,7 +630,10 @@ if __name__ == "__main__":
     in_file = h5py.File(filename_bg, 'r') 
     file_dataset = np.array(in_file['dataset'])
     file_dataset[:,:,2] = file_dataset[:,:,2]/1e5 #E
-    file_dataset[:,:,3] = file_dataset[:,:,3]/1e5 #pT 
+    file_dataset[:,:,3] = file_dataset[:,:,3]/1e5 #pT
+    #log of energy and pt as preprocessing
+    file_dataset[:,:,2] = np.log(file_dataset[:,:,2]+1)
+    file_dataset[:,:,3] = np.log(file_dataset[:,:,3]+1) 
     #Select top N processes only :
     n_proc = 3
     (unique, counts) = np.unique(file_dataset[:,:,0], return_counts=True)
@@ -568,16 +643,23 @@ if __name__ == "__main__":
 
 
     datas = []
-    tot_evt = file_dataset.shape[0]# int(1e4)
+    tot_evt = int(1e3)#file_dataset.shape[0]# int(1e4)
     print('Preparing the dataset of {} events'.format(tot_evt))
     n_objs = args.input_shape[0]
-    adj = [csr_matrix(np.ones((n_objs,n_objs)) - np.eye(n_objs))]*tot_evt
-    #try with no connecting zero particles 
-    edge_index = [from_scipy_sparse_matrix(a)[0] for a in adj]      
-    x = [torch.tensor(file_dataset[i_evt,:,1:], dtype=torch.float) for i_evt in range(tot_evt)]
+    #connecting all particles
+    #adj = [csr_matrix(np.ones((n_objs,n_objs)) - np.eye(n_objs))]*tot_evt
+    #edge_index = [from_scipy_sparse_matrix(a)[0] for a in adj]   
+
+    #conencting only real particles
+    adj_non_con = make_adjacencies(file_dataset)
+    adj_non_connected = [csr_matrix(adj_non_con[i]) for i in range(tot_evt)]
+    edge_index = [from_scipy_sparse_matrix(a)[0] for a in adj_non_connected]      
+
+    x = [torch.tensor(file_dataset[i_evt,1:,1:], dtype=torch.float) for i_evt in range(tot_evt)]
     y = [torch.tensor(int(file_dataset[i_evt,0,0]), dtype=torch.int) for i_evt in range(tot_evt)]
-    datas = [Data(x=x_jet, edge_index=edge_index_jet,y=torch.unsqueeze(u_jet, 0)) 
-         for x_jet,edge_index_jet,u_jet in zip(x,edge_index,y)]
+    x_met = [torch.tensor(file_dataset[i_evt,0,[2,5]], dtype=torch.float) for i_evt in range(tot_evt)]
+    datas = [Data(x=x_event, edge_index=edge_index_event,y=torch.unsqueeze(y_event, 0),x_met=x_met_event) 
+    for x_event,edge_index_event,y_event,x_met_event in zip(x,edge_index,y,x_met)]
     print('Dataset of {} events prepared'.format(tot_evt))
     dataset  = GraphDataset(datas)
     #pid_weight = torch.tensor([1./0.52,1./0.37,1./0.025,1./0.016,1./0.06]).to(device)
@@ -590,6 +672,7 @@ if __name__ == "__main__":
 
     energy_loss_weight = 1.0
     pid_loss_weight = 0.5
+    total_met_loss = 1.0
 
     print(args)
     train_idec()
