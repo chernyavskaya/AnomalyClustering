@@ -39,6 +39,8 @@ sys.path.append(os.path.abspath(os.path.join('../../')))
 #sys.path.append(os.path.abspath(os.path.join('../')))
 import ADgvae.utils_torch.model_summary as summary
 
+#torch.autograd.set_detect_anomaly(True)
+
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 eps = 1e-12
 PI = math.pi
@@ -148,14 +150,15 @@ class CustomHuberLoss:
         errors = torch.abs(difference)
 
         mask = errors < self.delta
-        res = (0.5 * mask * (torch.pow(errors,2))) + ~mask *(delta*(errors-0.5*delta))
+        res = (0.5 * mask * (torch.pow(errors,2))) + ~mask *(self.delta*(errors-0.5*self.delta))
         if self.reduction=='mean':
             return torch.mean(res)
         else:
             return torch.sum(res)
 
-def met_loss(target, reco, phi_idx=-1):
-    diff[:,:,:,phi_idx] = cycle_by_2pi(diff[:,:,:,phi_idx])
+def global_met_loss(target, reco, phi_idx=-1):
+    diff = target-reco
+    diff[:,phi_idx] = cycle_by_2pi(diff[:,phi_idx])
 
     loss_fnc = CustomHuberLoss(delta=10.0)
     loss = 2*(loss_fnc(diff)) #2* because in Huber loss there is a factor 1/2
@@ -283,24 +286,22 @@ class GraphAE(torch.nn.Module):
     x = self.enc_fc1(x)
     x = self.activation(x)
 
-    print(x_met.shape,x.shape)
-    x = torch.cat((x_met,x),dim=-1)
-    print(x.shape)
-    x = self.enc_fc2(x)
+    x_final = torch.cat((x_met,x),dim=-1)
+    x_final = self.enc_fc2(x_final)
     #no activation function before latent space
-    return x
+    return x_final
  
   def decode(self, z, edge_index):
-    #x = torch.repeat_interleave(z, self.num_fixed_nodes, dim=0)
-    x = self.dec_fc1(z)
-    x = self.activation(x)
+    encoded_x = self.dec_fc1(z)
+    encoded_x = self.activation(encoded_x)
 
-    x_met = x[0:self.hidden_global]
+    x_met = encoded_x[:,0:self.hidden_global]
     x_met = self.dec_met_fc1(x_met)
-    x_met[0:2] = F.relu(x_met[0:2])
-    x_met[2:] = 2*PI*torch.tanh(x_met[2:])
+    x_met_energy = F.relu(x_met[:,0:1]) #energy
+    x_met_phi = 2*PI*torch.tanh(x_met[:,1:]) #phi
+    x_met = torch.cat([x_met_energy,x_met_phi], dim=-1) 
 
-    x = x[self.hidden_global:]
+    x = encoded_x[:,self.hidden_global:]
 
     x = self.dec_fc2(x)
     x = self.activation(x)
@@ -329,9 +330,9 @@ class GraphAE(torch.nn.Module):
     x_energy_pt = F.relu(x_energy_pt)
     #x_energy_pt = F.leaky_relu(x_energy_pt, negative_slope=0.1)
     #x = torch.cat([x_cat,x[:,self.num_pid_classes:]], dim=-1) 
-    x = torch.cat([x_cat,x_energy_pt,x_eta,x_phi], dim=-1) 
+    x_final = torch.cat([x_cat,x_energy_pt,x_eta,x_phi], dim=-1) 
 
-    return x,x_met
+    return x_final,x_met
  
   def forward(self,data):
     x,x_met,edge_index, batch_index = data.x,data.x_met.reshape((-1,self.input_shape_global)), data.edge_index, data.batch
@@ -373,7 +374,7 @@ class IDEC(nn.Module):
         print('load pretrained ae from', path)
 
     def forward(self, data):
-        x_bar, z, x_met_bar = self.ae(x,data)
+        x_bar, x_met_bar, z = self.ae(data)
         # cluster
         q = 1.0 / (1.0 + torch.sum(
             torch.pow(z.unsqueeze(1) - self.cluster_layer, 2), 2) / self.alpha)
@@ -438,7 +439,7 @@ def pretrain_ae(model):
 
             reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.num_pid_classes:],batch_index,phi_idx = -1)
 
-            met_loss = met_loss(x_met, x_met_bar)
+            met_loss = global_met_loss(x_met, x_met_bar)
 
             #energy_loss  = huber_loss(x[:,[model.energy_idx,model.pt_idx]],x_bar[:,[model.num_pid_classes-1 + model.energy_idx, model.num_pid_classes-1 + model.pt_idx]],xy_idx, yx_idx)
 
@@ -563,7 +564,7 @@ def train_idec():
             
             reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.ae.num_pid_classes:],batch_index,phi_idx = -1)
 
-            met_loss = met_loss(x_met, x_met_bar)
+            met_loss = global_met_loss(x_met, x_met_bar)
 
             #energy_loss  = huber_loss(x[:,[model.ae.energy_idx,model.ae.pt_idx]],x_bar[:,[model.ae.num_pid_classes-1 + model.ae.energy_idx, model.ae.num_pid_classes-1 + model.ae.pt_idx]],xy_idx, yx_idx)
 
@@ -639,11 +640,11 @@ if __name__ == "__main__":
     (unique, counts) = np.unique(file_dataset[:,:,0], return_counts=True)
     procs_sorted, counts_sorted = zip(*sorted(zip(unique, counts), key=lambda x: x[1],reverse=True))
     top_proc_mask = np.isin(file_dataset[:,0,0], procs_sorted[:n_proc]) #choose top 3
-    file_dataset = file_dataset[top_proc_mask][:,1:args.input_shape[0]+1,:]
+    file_dataset = file_dataset[top_proc_mask][:,:args.input_shape[0]+1,:]
 
 
     datas = []
-    tot_evt = int(1e3)#file_dataset.shape[0]# int(1e4)
+    tot_evt = file_dataset.shape[0]# int(1e4)
     print('Preparing the dataset of {} events'.format(tot_evt))
     n_objs = args.input_shape[0]
     #connecting all particles
@@ -651,7 +652,7 @@ if __name__ == "__main__":
     #edge_index = [from_scipy_sparse_matrix(a)[0] for a in adj]   
 
     #conencting only real particles
-    adj_non_con = make_adjacencies(file_dataset)
+    adj_non_con = make_adjacencies(file_dataset[:,1:,])
     adj_non_connected = [csr_matrix(adj_non_con[i]) for i in range(tot_evt)]
     edge_index = [from_scipy_sparse_matrix(a)[0] for a in adj_non_connected]      
 
@@ -672,7 +673,7 @@ if __name__ == "__main__":
 
     energy_loss_weight = 1.0
     pid_loss_weight = 0.5
-    total_met_loss = 1.0
+    met_loss_weight = 0.5
 
     print(args)
     train_idec()
