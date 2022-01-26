@@ -26,7 +26,7 @@ from torch.nn import Embedding
 from torch.autograd import Variable
 
 from scipy.sparse import csr_matrix
-from torch_geometric.nn import Sequential, GCNConv, EdgeConv, GATConv, GATv2Conv, global_mean_pool, DynamicEdgeConv, BatchNorm
+from torch_geometric.nn import Sequential, GCN, GCNConv, EdgeConv, GATConv, GATv2Conv, global_mean_pool, DynamicEdgeConv, BatchNorm
 
 from torch_geometric.utils import from_scipy_sparse_matrix, to_dense_batch
 
@@ -76,19 +76,30 @@ def cycle_by_2pi(in_tensor):
     return in_tensor
 
 
-def chamfer_loss(target, reco, batch,phi_idx=1):
+def chamfer_loss(target, reco, batch):
     x = to_dense_batch(target, batch)[0]
     y = to_dense_batch(reco, batch)[0] 
     #dist = pairwise_distance(x,y)
     diff = pairwise_distance(x,y)
-    #phi is idx = 1
-    diff[:,:,:,phi_idx] = cycle_by_2pi(diff[:,:,:,phi_idx])
+
+    #if coordinate and energy should be weighted differently in the total sum of distances, this should be done here!
+    #should at least check the magnitide of it
+    #diff_0 = diff[:,:,:,0]
+    #diff_1 = diff[:,:,:,1]
+    #diff_2 = diff[:,:,:,2]
+    #diff_3 = diff[:,:,:,3]
+    #sum_min_dist_0 = torch.sum(torch.min(torch.norm(diff_0, dim=-1,p=2), dim = -1).values)
+    #sum_min_dist_1 = torch.sum(torch.min(torch.norm(diff_1, dim=-1,p=2), dim = -1).values)
+    #sum_min_dist_2 = torch.sum(torch.min(torch.norm(diff_2, dim=-1,p=2), dim = -1).values)
+    #sum_min_dist_3 = torch.sum(torch.min(torch.norm(diff_3, dim=-1,p=2), dim = -1).values)
+    #print(sum_min_dist_0,sum_min_dist_1,sum_min_dist_2,sum_min_dist_3)
+
     dist = torch.norm(diff, dim=-1,p=2) #x1 - y1 + eps
 
     # For every output value, find its closest input value; for every input value, find its closest output value.
     min_dist_xy = torch.min(dist, dim = -1)  # Get min distance per row - Find the closest input to the output
     min_dist_yx = torch.min(dist, dim = -2)  # Get min distance per column - Find the closest output to the input
-    eucl =  torch.sum(min_dist_xy.values + min_dist_yx.values)
+    eucl =  1./2*torch.sum(min_dist_xy.values + min_dist_yx.values)
     batch_size = x.shape[0]
     num_particles = x.shape[1]
     eucl =  eucl/(batch_size*num_particles)
@@ -115,7 +126,7 @@ def categorical_loss_cosine(target, reco,xy_idx, yx_idx,loss_fnc):
     #target : get_y # :target - the closest output to the input
     #first argument NN output, second argument is true labels
     mask = Variable(torch.ones(get_y.shape[0]), requires_grad=False).to(device)
-    loss = loss_fnc(reco,get_x,mask) + loss_fnc(get_y,target,mask)
+    loss = 1./2.*(loss_fnc(reco,get_x,mask) + loss_fnc(get_y,target,mask))
 
     return loss
 
@@ -156,9 +167,9 @@ class CustomHuberLoss:
         else:
             return torch.sum(res)
 
-def global_met_loss(target, reco, phi_idx=-1):
+def global_met_loss(target, reco):
+    #this custom class is not needed anymore, we can just use directly Huber. it was needed for applying cyclic operation on delta phi
     diff = target-reco
-    diff[:,phi_idx] = cycle_by_2pi(diff[:,phi_idx])
 
     loss_fnc = CustomHuberLoss(delta=10.0)
     loss = 2*(loss_fnc(diff)) #2* because in Huber loss there is a factor 1/2
@@ -185,19 +196,19 @@ def pairwise_distance(x, y):
 
 
 class EdgeConvLayer(nn.Module):   
-    def __init__(self, in_dim, out_dim, dropout=0.0, batch_norm=True, activation=nn.LeakyReLU(negative_slope=0.3), aggr='mean'):
+    def __init__(self, in_dim, out_dim, dropout=0.0, batch_norm=True, act=nn.LeakyReLU(negative_slope=0.3), aggr='mean'):
         super().__init__()
-        self.activation = activation
+        self.activation = act
         self.batch_norm = batch_norm
             
         if self.batch_norm:
             self.edgeconv = nn.Sequential(nn.Linear(2*(in_dim), out_dim),
                                    nn.BatchNorm1d(out_dim),
-                                   activation,
+                                   self.activation,
                                    nn.Dropout(p=dropout)) 
         else :
             self.edgeconv = nn.Sequential(nn.Linear(2*(in_dim), out_dim),
-                                   activation,
+                                   self.activation,
                                    nn.Dropout(p=dropout))             
 
         ###dropout in AE as a regularization 
@@ -213,7 +224,11 @@ class GraphAE(torch.nn.Module):
     super(GraphAE, self).__init__()
 
     #Which main block to use for the architecture
-    layer = EdgeConvLayer # EdgeConvLayer #GCNConv
+    layer = EdgeConvLayer # EdgeConvLayer #GCNConv #GCN
+    layer_kwargs = {'act':activation}
+    if layer == GCN :
+        layer_kwargs['num_layers'] = 1
+
     self.activation = activation 
     #self.batchnorm = nn.BatchNorm1d(input_shape[-1])
     self.num_fixed_nodes = input_shape[0]
@@ -234,9 +249,9 @@ class GraphAE(torch.nn.Module):
     # ENCODER 
     self.enc_convs = ModuleList()  
     #self.enc_convs.append(layer(self.num_emb_feats, hidden_channels[0],activation=self.activation)) 
-    self.enc_convs.append(layer(self.num_feats, hidden_channels[0],activation=self.activation))
+    self.enc_convs.append(layer(self.num_feats, hidden_channels[0],**layer_kwargs))
     for i in range(0,len(hidden_channels)-1):
-        self.enc_convs.append(layer(hidden_channels[i], hidden_channels[i+1],activation=self.activation))
+        self.enc_convs.append(layer(hidden_channels[i], hidden_channels[i+1],**layer_kwargs))
     self.num_enc_convs  = len(self.enc_convs)
     #scatter_mean from batch_size x num_fixed_nodes -> batch_size
     self.enc_fc1 = torch.nn.Linear(2*hidden_channels[-1], hidden_channels[-1]) 
@@ -253,11 +268,12 @@ class GraphAE(torch.nn.Module):
 
     #reshape 
     self.dec_convs = ModuleList()
-    self.dec_convs.append(layer(2*latent_dim, hidden_channels[-1],activation=self.activation))
+    self.dec_convs.append(layer(2*latent_dim, hidden_channels[-1],**layer_kwargs))
     for i in range(len(hidden_channels)-1,0,-1):
-        self.dec_convs.append(layer(hidden_channels[i], hidden_channels[i-1],activation=self.activation))
+        self.dec_convs.append(layer(hidden_channels[i], hidden_channels[i-1],**layer_kwargs))
     #self.dec_convs.append(layer(hidden_channels[0], self.num_emb_feats ,activation=self.activation))
-    self.dec_convs.append(layer(hidden_channels[0], self.num_feats+self.num_pid_classes-1 ,activation=nn.Identity()))
+    layer_kwargs['act'] = nn.Identity()
+    self.dec_convs.append(layer(hidden_channels[0], self.num_feats+self.num_pid_classes-1 ,**layer_kwargs))
 
     self.num_dec_convs  = len(self.dec_convs)
 
@@ -298,7 +314,9 @@ class GraphAE(torch.nn.Module):
     x_met = encoded_x[:,0:self.hidden_global]
     x_met = self.dec_met_fc1(x_met)
     x_met_energy = F.relu(x_met[:,0:1]) #energy
-    x_met_phi = 2*PI*torch.tanh(x_met[:,1:]) #phi
+    x_met_phi = x_met[:,1:]
+    x_met_phi = cycle_by_2pi(x_met_phi)
+    #x_met_phi = PI*torch.tanh(x_met_phi) #phi
     x_met = torch.cat([x_met_energy,x_met_phi], dim=-1) 
 
     x = encoded_x[:,self.hidden_global:]
@@ -309,7 +327,7 @@ class GraphAE(torch.nn.Module):
     layer_size = x.shape[-1]
     #x = torch.reshape(x,(batch_size*self.num_fixed_nodes, int(layer_size/self.num_fixed_nodes)))
     ######
-    #try with permutation
+    ###try with permutation
     x = torch.reshape(x,(batch_size,self.num_fixed_nodes, int(layer_size/self.num_fixed_nodes)))
     idx = torch.randint(self.num_fixed_nodes, size=(batch_size, self.num_fixed_nodes)).to(x.get_device())
     x = x.gather(dim=1, index=idx.unsqueeze(-1).expand(x.shape))
@@ -324,9 +342,10 @@ class GraphAE(torch.nn.Module):
     x_eta = x[:,[self.num_pid_classes-1+self.eta_idx]]
     x_phi =  x[:,[self.num_pid_classes-1+self.phi_idx]]
     x_energy_pt = x[:,[self.num_pid_classes-1+self.energy_idx,self.num_pid_classes-1+self.pt_idx]]
-    x_phi = 2*PI*torch.tanh(x_phi)
+    x_phi = cycle_by_2pi(x_phi)
+    #x_phi = PI*torch.tanh(x_phi)
     #x_phi = cycle_by_2pi(x_phi)
-    x_eta = 4*torch.tanh(x_eta) #eta is restricted at 2.8, but if scaled with 2.8 might be too restrictive 
+    x_eta = 5.*torch.tanh(x_eta) # have a symmetric activation function that eventually dies out. 
     x_energy_pt = F.relu(x_energy_pt)
     #x_energy_pt = F.leaky_relu(x_energy_pt, negative_slope=0.1)
     #x = torch.cat([x_cat,x[:,self.num_pid_classes:]], dim=-1) 
@@ -435,24 +454,24 @@ def pretrain_ae(model):
             #loss = F.mse_loss(x_bar, x) 
             #loss, xy_idx, yx_idx = chamfer_loss(x_embedded,x_bar,batch_index)
             #reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.ae.num_pid_classes:],batch_index)
-            #reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,[model.eta_idx,model.phi_idx]],x_bar[:,[model.num_pid_classes-1 + model.eta_idx, model.num_pid_classes-1 + model.phi_idx]],batch_index)
+            reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,[model.eta_idx,model.phi_idx]],x_bar[:,[model.num_pid_classes-1 + model.eta_idx, model.num_pid_classes-1 + model.phi_idx]],batch_index)
 
-            reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.num_pid_classes:],batch_index,phi_idx = -1)
+            #reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.num_pid_classes:],batch_index)
 
             met_loss = global_met_loss(x_met, x_met_bar)
 
-            #energy_loss  = huber_loss(x[:,[model.energy_idx,model.pt_idx]],x_bar[:,[model.num_pid_classes-1 + model.energy_idx, model.num_pid_classes-1 + model.pt_idx]],xy_idx, yx_idx)
+            energy_loss  = huber_loss(x[:,[model.energy_idx,model.pt_idx]],x_bar[:,[model.num_pid_classes-1 + model.energy_idx, model.num_pid_classes-1 + model.pt_idx]],xy_idx, yx_idx)
 
             nll_loss = nn.NLLLoss(reduction='mean',weight=pid_weight)
             pid_loss = categorical_loss(x[:,0],x_bar[:,0:model.num_pid_classes],xy_idx, yx_idx,nll_loss) #target, reco
 
-            loss = reco_loss  + pid_loss_weight*pid_loss  #+ energy_loss_weight*energy_loss
+            loss = reco_loss  + pid_loss_weight*pid_loss + met_loss_weight*met_loss + energy_loss_weight*energy_loss
             total_loss += loss.item()
             total_reco_loss += reco_loss.item()
             total_pid_loss += pid_loss.item()
             total_met_loss += met_loss.item()
-            #total_energy_loss += energy_loss.item()
-            total_energy_loss += 0. 
+            total_energy_loss += energy_loss.item()
+            #total_energy_loss += 0. 
 
             loss.backward()
             optimizer.step()
@@ -560,27 +579,27 @@ def train_idec():
             #pid_loss = categorical_loss(x[:,0],x_bar[:,0:model.ae.num_pid_classes],xy_idx, yx_idx,nll_loss) #target, reco
 
 
-            #reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,[model.ae.eta_idx,model.ae.phi_idx]],x_bar[:,[model.ae.num_pid_classes-1 + model.ae.eta_idx, model.ae.num_pid_classes-1 + model.ae.phi_idx]],batch_index)
+            reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,[model.ae.eta_idx,model.ae.phi_idx]],x_bar[:,[model.ae.num_pid_classes-1 + model.ae.eta_idx, model.ae.num_pid_classes-1 + model.ae.phi_idx]],batch_index)
             
-            reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.ae.num_pid_classes:],batch_index,phi_idx = -1)
+            #reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.ae.num_pid_classes:],batch_index)
 
             met_loss = global_met_loss(x_met, x_met_bar)
 
-            #energy_loss  = huber_loss(x[:,[model.ae.energy_idx,model.ae.pt_idx]],x_bar[:,[model.ae.num_pid_classes-1 + model.ae.energy_idx, model.ae.num_pid_classes-1 + model.ae.pt_idx]],xy_idx, yx_idx)
+            energy_loss  = huber_loss(x[:,[model.ae.energy_idx,model.ae.pt_idx]],x_bar[:,[model.ae.num_pid_classes-1 + model.ae.energy_idx, model.ae.num_pid_classes-1 + model.ae.pt_idx]],xy_idx, yx_idx)
 
             nll_loss = nn.NLLLoss(reduction='mean',weight=pid_weight)
             pid_loss = categorical_loss(x[:,0],x_bar[:,0:model.ae.num_pid_classes],xy_idx, yx_idx,nll_loss) #target, reco
 
             kl_loss = F.kl_div(q.log(), p_all[i],reduction='batchmean')
-            loss = args.gamma * kl_loss + reco_loss + pid_loss_weight*pid_loss + met_loss_weight*met_loss#+ energy_loss_weight*energy_loss 
+            loss = args.gamma * kl_loss + reco_loss + pid_loss_weight*pid_loss + met_loss_weight*met_loss+ energy_loss_weight*energy_loss 
 
             optimizer.zero_grad()
             total_loss += loss.item()
             total_kl_loss += kl_loss.item()
             total_reco_loss += reco_loss.item()
             total_pid_loss += pid_loss.item()
-            #total_energy_loss += energy_loss.item()
-            total_energy_loss += 0.
+            total_energy_loss += energy_loss.item()
+            #total_energy_loss += 0.
             total_met_loss = met_loss.item()
 
             loss.backward()
@@ -607,7 +626,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', default=256, type=int)
     parser.add_argument('--latent_dim', default=5, type=int)
     parser.add_argument('--input_shape', default=[11,5], type=int)
-    parser.add_argument('--hidden_channels', default=[10, 12, 16, 20, 25, 30, 40], type=int)   ## [8, 12, 16, 20, 25, 30 ]
+    parser.add_argument('--hidden_channels', default=[10, 12, 16, 20, 30], type=int)   ## [8, 12, 16, 20, 25, 30 ]
     parser.add_argument('--pretrain_path', type=str, default='data_graph/graph_ae_pretrain.pkl') 
     parser.add_argument('--gamma',default=100.,type=float,help='coefficient of clustering loss')
     parser.add_argument('--update_interval', default=1, type=int)
@@ -672,8 +691,8 @@ if __name__ == "__main__":
     pid_weight = torch.tensor([1.3,1.,7.,5.]).to(device) #4 clasess without met , 11 particles
 
     energy_loss_weight = 1.0
-    pid_loss_weight = 0.5
-    met_loss_weight = 0.5
+    pid_loss_weight = 0.1
+    met_loss_weight = 10.0
 
     print(args)
     train_idec()
