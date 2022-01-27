@@ -31,6 +31,21 @@ def load_mnist(path='./data/mnist.npz'):
     return x, y
 
 
+
+class DenseEventDataset(Dataset):
+
+    def __init__(self,dataset_1d,dataset_truth):
+        super().__init__()
+        self.dataset_1d, self.dataset_truth = dataset_1d,dataset_truth
+
+    def __len__(self):
+        return self.dataset_1d.shape[0]
+
+    def __getitem__(self, idx):
+        return torch.from_numpy(np.array(self.dataset_1d[idx])).float(), torch.from_numpy(
+            np.array(self.dataset_truth[idx])).float()
+
+
 class MnistDataset(Dataset):
 
     def __init__(self):

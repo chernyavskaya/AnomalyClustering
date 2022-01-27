@@ -31,12 +31,14 @@ from torch_geometric.nn import Sequential, GCN, GCNConv, EdgeConv, GATConv, GATv
 from torch_geometric.utils import from_scipy_sparse_matrix, to_dense_batch
 
 from torch_geometric.data import Data, Batch, DataLoader
+from torch.utils.data import DataLoader as DataLoaderTorch
+
 from utils import GraphDataset, cluster_acc
 from torch_scatter import scatter_mean,scatter_max
 
 import os.path as osp
 sys.path.append(os.path.abspath(os.path.join('../../')))
-#sys.path.append(os.path.abspath(os.path.join('../')))
+sys.path.append(os.path.abspath(os.path.join('../')))
 import ADgvae.utils_torch.model_summary as summary
 
 #torch.autograd.set_detect_anomaly(True)
@@ -220,7 +222,7 @@ class EdgeConvLayer(nn.Module):
         return h
 
 class GraphAE(torch.nn.Module):
-  def __init__(self, input_shape, hidden_channels,latent_dim,activation=nn.LeakyReLU(negative_slope=0.3),input_shape_global = 2):
+  def __init__(self, input_shape, hidden_channels,latent_dim,activation=nn.LeakyReLU(negative_slope=0.1),input_shape_global = 2):
     super(GraphAE, self).__init__()
 
     #Which main block to use for the architecture
@@ -342,10 +344,15 @@ class GraphAE(torch.nn.Module):
     x_eta = x[:,[self.num_pid_classes-1+self.eta_idx]]
     x_phi =  x[:,[self.num_pid_classes-1+self.phi_idx]]
     x_energy_pt = x[:,[self.num_pid_classes-1+self.energy_idx,self.num_pid_classes-1+self.pt_idx]]
-    x_phi = cycle_by_2pi(x_phi)
-    #x_phi = PI*torch.tanh(x_phi)
     #x_phi = cycle_by_2pi(x_phi)
-    x_eta = 5.*torch.tanh(x_eta) # have a symmetric activation function that eventually dies out. 
+    #x_phi = PI*torch.tanh(x_phi)
+    #x_eta = 5.*torch.tanh(x_eta) # have a symmetric activation function that eventually dies out. 
+
+#########
+    x_phi = 7.*torch.tanh(x_phi)
+    x_eta = 6.*torch.tanh(x_eta)
+##########
+
     x_energy_pt = F.relu(x_energy_pt)
     #x_energy_pt = F.leaky_relu(x_energy_pt, negative_slope=0.1)
     #x = torch.cat([x_cat,x[:,self.num_pid_classes:]], dim=-1) 
@@ -454,24 +461,24 @@ def pretrain_ae(model):
             #loss = F.mse_loss(x_bar, x) 
             #loss, xy_idx, yx_idx = chamfer_loss(x_embedded,x_bar,batch_index)
             #reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.ae.num_pid_classes:],batch_index)
-            reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,[model.eta_idx,model.phi_idx]],x_bar[:,[model.num_pid_classes-1 + model.eta_idx, model.num_pid_classes-1 + model.phi_idx]],batch_index)
+            #reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,[model.eta_idx,model.phi_idx]],x_bar[:,[model.num_pid_classes-1 + model.eta_idx, model.num_pid_classes-1 + model.phi_idx]],batch_index)
 
-            #reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.num_pid_classes:],batch_index)
+            reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.num_pid_classes:],batch_index)
 
             met_loss = global_met_loss(x_met, x_met_bar)
 
-            energy_loss  = huber_loss(x[:,[model.energy_idx,model.pt_idx]],x_bar[:,[model.num_pid_classes-1 + model.energy_idx, model.num_pid_classes-1 + model.pt_idx]],xy_idx, yx_idx)
+            #energy_loss  = huber_loss(x[:,[model.energy_idx,model.pt_idx]],x_bar[:,[model.num_pid_classes-1 + model.energy_idx, model.num_pid_classes-1 + model.pt_idx]],xy_idx, yx_idx)
 
             nll_loss = nn.NLLLoss(reduction='mean',weight=pid_weight)
             pid_loss = categorical_loss(x[:,0],x_bar[:,0:model.num_pid_classes],xy_idx, yx_idx,nll_loss) #target, reco
 
-            loss = reco_loss  + pid_loss_weight*pid_loss + met_loss_weight*met_loss + energy_loss_weight*energy_loss
+            loss = reco_loss  + pid_loss_weight*pid_loss + met_loss_weight*met_loss #+ energy_loss_weight*energy_loss
             total_loss += loss.item()
             total_reco_loss += reco_loss.item()
             total_pid_loss += pid_loss.item()
             total_met_loss += met_loss.item()
-            total_energy_loss += energy_loss.item()
-            #total_energy_loss += 0. 
+            #total_energy_loss += energy_loss.item()
+            total_energy_loss += 0. 
 
             loss.backward()
             optimizer.step()
@@ -579,27 +586,27 @@ def train_idec():
             #pid_loss = categorical_loss(x[:,0],x_bar[:,0:model.ae.num_pid_classes],xy_idx, yx_idx,nll_loss) #target, reco
 
 
-            reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,[model.ae.eta_idx,model.ae.phi_idx]],x_bar[:,[model.ae.num_pid_classes-1 + model.ae.eta_idx, model.ae.num_pid_classes-1 + model.ae.phi_idx]],batch_index)
+            #reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,[model.ae.eta_idx,model.ae.phi_idx]],x_bar[:,[model.ae.num_pid_classes-1 + model.ae.eta_idx, model.ae.num_pid_classes-1 + model.ae.phi_idx]],batch_index)
             
-            #reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.ae.num_pid_classes:],batch_index)
+            reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.ae.num_pid_classes:],batch_index)
 
             met_loss = global_met_loss(x_met, x_met_bar)
 
-            energy_loss  = huber_loss(x[:,[model.ae.energy_idx,model.ae.pt_idx]],x_bar[:,[model.ae.num_pid_classes-1 + model.ae.energy_idx, model.ae.num_pid_classes-1 + model.ae.pt_idx]],xy_idx, yx_idx)
+            #energy_loss  = huber_loss(x[:,[model.ae.energy_idx,model.ae.pt_idx]],x_bar[:,[model.ae.num_pid_classes-1 + model.ae.energy_idx, model.ae.num_pid_classes-1 + model.ae.pt_idx]],xy_idx, yx_idx)
 
             nll_loss = nn.NLLLoss(reduction='mean',weight=pid_weight)
             pid_loss = categorical_loss(x[:,0],x_bar[:,0:model.ae.num_pid_classes],xy_idx, yx_idx,nll_loss) #target, reco
 
             kl_loss = F.kl_div(q.log(), p_all[i],reduction='batchmean')
-            loss = args.gamma * kl_loss + reco_loss + pid_loss_weight*pid_loss + met_loss_weight*met_loss+ energy_loss_weight*energy_loss 
+            loss = args.gamma * kl_loss + reco_loss + pid_loss_weight*pid_loss + met_loss_weight*met_loss #+ energy_loss_weight*energy_loss 
 
             optimizer.zero_grad()
             total_loss += loss.item()
             total_kl_loss += kl_loss.item()
             total_reco_loss += reco_loss.item()
             total_pid_loss += pid_loss.item()
-            total_energy_loss += energy_loss.item()
-            #total_energy_loss += 0.
+            #total_energy_loss += energy_loss.item()
+            total_energy_loss += 0.
             total_met_loss = met_loss.item()
 
             loss.backward()
@@ -625,8 +632,8 @@ if __name__ == "__main__":
     parser.add_argument('--n_clusters', default=5, type=int)
     parser.add_argument('--batch_size', default=256, type=int)
     parser.add_argument('--latent_dim', default=5, type=int)
-    parser.add_argument('--input_shape', default=[11,5], type=int)
-    parser.add_argument('--hidden_channels', default=[10, 12, 16, 20, 30], type=int)   ## [8, 12, 16, 20, 25, 30 ]
+    parser.add_argument('--input_shape', default=[16,5], type=int)
+    parser.add_argument('--hidden_channels', default=[8, 12, 16, 20, 25, 30, 40, 60,50,40,30 ], type=int)   ## [8, 12, 16, 20, 25, 30 ]
     parser.add_argument('--pretrain_path', type=str, default='data_graph/graph_ae_pretrain.pkl') 
     parser.add_argument('--gamma',default=100.,type=float,help='coefficient of clustering loss')
     parser.add_argument('--update_interval', default=1, type=int)
@@ -654,6 +661,9 @@ if __name__ == "__main__":
     #log of energy and pt as preprocessing
     file_dataset[:,:,2] = np.log(file_dataset[:,:,2]+1)
     file_dataset[:,:,3] = np.log(file_dataset[:,:,3]+1) 
+    file_dataset[:,1:,4] = np.where(file_dataset[:,1:,1]==0.,0.,file_dataset[:,1:,4]+3.0)
+    file_dataset[:,1:,5] = np.where(file_dataset[:,1:,1]==0.,0.,file_dataset[:,1:,5]+3.4)
+
     #Select top N processes only :
     n_proc = 3
     (unique, counts) = np.unique(file_dataset[:,:,0], return_counts=True)
@@ -685,10 +695,10 @@ if __name__ == "__main__":
     #pid_weight = torch.tensor([1./0.52,1./0.37,1./0.025,1./0.016,1./0.06]).to(device)
     #pid_weight = torch.tensor([1.,1.4,20.,30.,9.]).to(device)
     #pid_weight = torch.tensor([1.,1.4,10.,10.,10.]).to(device)
-    #pid_weight = torch.tensor([1.,1.4,5.,5.,5.]).to(device)
+    pid_weight = torch.tensor([1.,1.4,5.,5.]).to(device)
     #pid_weight = torch.tensor([1.3,1.,12.,19.]).to(device) #4 clasess without met , 11 particles
     #pid_weight = torch.tensor([5,1.,12.,19.]).to(device) #4 clasess without met, 7 particles
-    pid_weight = torch.tensor([1.3,1.,7.,5.]).to(device) #4 clasess without met , 11 particles
+    #pid_weight = torch.tensor([1.3,1.,7.,5.]).to(device) #4 clasess without met , 11 particles
 
     energy_loss_weight = 1.0
     pid_loss_weight = 0.1
