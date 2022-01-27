@@ -56,6 +56,7 @@ def cycle_by_2pi(in_tensor):
 
 
 def huber_mask(inputs, outputs):
+    # we might want to introduce different weighting to the parts of the loss with  jets/muons/...
     loss_fnc = torch.nn.HuberLoss(delta=10.0)
     loss = loss_fnc(inputs,outputs)
     return loss
@@ -63,7 +64,7 @@ def huber_mask(inputs, outputs):
 
 
 class DenseAE(torch.nn.Module):
-  def __init__(self, input_shape, hidden_channels,latent_dim,activation=nn.LeakyReLU(negative_slope=0.1),input_shape_global = 2):
+  def __init__(self, input_shape, hidden_channels,latent_dim,activation=nn.LeakyReLU(negative_slope=0.5),input_shape_global = 2):
     super(DenseAE, self).__init__()
 
     self.activation = activation 
@@ -379,7 +380,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', default=256, type=int)
     parser.add_argument('--latent_dim', default=5, type=int)
     parser.add_argument('--input_shape', default=[124], type=int)
-    parser.add_argument('--hidden_channels', default=[100,50,30,10 ], type=int)   
+    parser.add_argument('--hidden_channels', default=[70,50,30,10 ], type=int)   
     parser.add_argument('--pretrain_path', type=str, default='data_dense/dense_ae_pretrain.pkl') 
     parser.add_argument('--gamma',default=100.,type=float,help='coefficient of clustering loss')
     parser.add_argument('--update_interval', default=1, type=int)
