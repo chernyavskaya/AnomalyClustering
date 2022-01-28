@@ -1,9 +1,6 @@
 # Code developed by © chernyavskaya 
 # Starting point for iDEC from © dawnranger
 #
-from __future__ import print_function, division
-import setGPU
-
 import numpy as np
 
 from sklearn.cluster import MiniBatchKMeans, KMeans
@@ -11,9 +8,10 @@ from sklearn.metrics.cluster import normalized_mutual_info_score as nmi_score
 from sklearn.metrics import adjusted_rand_score as ari_score
 import torch
 from torch.optim import Adam
+import torch.nn.functional as F
+from torch.utils.data import DataLoader as DataLoaderTorch
 
 from torch_geometric.data import Data, Batch, DataLoader
-from torch.utils.data import DataLoader as DataLoaderTorch
 
 from training_utils.metrics import cluster_acc
 from training_utils.losses import chamfer_loss,huber_mask,categorical_loss,huber_loss,global_met_loss
@@ -67,7 +65,7 @@ def train_test_ae_graph(model,loader,optimizer,device,mode='test'):
             loss.backward()
             optimizer.step()
 
-        return total_loss / (i + 1) , total_reco_loss / (i + 1), total_pid_loss/(i+1), total_energy_loss/(i+1),total_met_loss/(i+1)
+    return total_loss / (i + 1) , total_reco_loss / (i + 1), total_pid_loss/(i+1), total_energy_loss/(i+1),total_met_loss/(i+1)
 
 
 def train_test_idec_graph(model,loader,p_all,optimizer,device,gamma,pid_loss_weight,met_loss_weight,energy_loss,mode='test'):
@@ -117,7 +115,7 @@ def train_test_idec_graph(model,loader,p_all,optimizer,device,gamma,pid_loss_wei
             loss.backward()
             optimizer.step()
 
-        return total_loss / (i + 1) , total_kl_loss / (i+1), total_reco_loss / (i + 1), total_pid_loss/(i+1), total_energy_loss/(i+1),total_met_loss/(i+1)
+    return total_loss / (i + 1) , total_kl_loss / (i+1), total_reco_loss / (i + 1), total_pid_loss/(i+1), total_energy_loss/(i+1),total_met_loss/(i+1)
 
 
 
@@ -157,11 +155,12 @@ def train_test_ae_dense(model,loader,optimizer,device,mode='test'):
         loss = huber_mask(x,x_bar)
 
         total_loss += loss.item()
+        #print(total_loss)
 
         if mode=='train':
             loss.backward()
             optimizer.step()
-        return total_loss / (i + 1)
+    return total_loss / (i + 1)
 
 
 def train_test_idec_dense(model,loader,p_all,optimizer,device,gamma,mode='test'):
@@ -170,7 +169,7 @@ def train_test_idec_dense(model,loader,p_all,optimizer,device,gamma,mode='test')
     else:
         model.train()
 
-    total_loss,total_reco_loss,total_kl_loss  = 0.,0.
+    total_loss,total_reco_loss,total_kl_loss  = 0.,0.,0.
     for i, (x,_) in enumerate(loader):
         x = x.to(device)
 
@@ -191,10 +190,7 @@ def train_test_idec_dense(model,loader,p_all,optimizer,device,gamma,mode='test')
         if mode=='train':
             loss.backward()
             optimizer.step()
-        return total_loss / (i + 1), total_reco_loss / (i + 1), total_kl_loss / (i + 1)
-
-
-
+    return total_loss / (i + 1), total_reco_loss / (i + 1), total_kl_loss / (i + 1)
 
 
 
@@ -203,10 +199,7 @@ def pretrain_ae_dense(model,train_loader,test_loader,optimizer,n_epochs,pretrain
     '''
     pretrain autoencoder for dense
     '''
-    #train_loader = DataLoaderTorch(dataset, batch_size=args.batch_size, shuffle=False,drop_last=True) #,num_workers=5
-    #print(model)
-    #optimizer = Adam(model.parameters(), lr=args.lr)
-    for epoch in range(args.n_epochs):
+    for epoch in range(n_epochs):
 
         train_loss = train_test_ae_dense(model,train_loader,optimizer,device,mode='train')
         test_loss = train_test_ae_dense(model,test_loader,optimizer,device,mode='test')

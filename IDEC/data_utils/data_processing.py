@@ -88,7 +88,7 @@ def make_adjacencies(particles):
 def proprocess_e_pt(file_dataset, idx=[2,3], scale=1.e5,log=True):
     file_dataset[:,:,idx] = file_dataset[:,:,idx]/scale 
     #log of energy and pt as preprocessing
-    if log=True:
+    if log==True:
         file_dataset[:,:,idx] = np.log(file_dataset[:,:,idx]+1)
     return file_dataset
 

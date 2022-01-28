@@ -5,7 +5,6 @@
 # Starting point for iDEC from © dawnranger
 #
 from __future__ import print_function, division
-import setGPU
 import os,sys
 import argparse
 import numpy as np
@@ -36,7 +35,7 @@ from torch.utils.data import DataLoader as DataLoaderTorch
 from training_utils.metrics import cluster_acc
 from torch_scatter import scatter_mean,scatter_max
 
-from training_utils.layers import EdgeConvLayer, EmbeddingLayer
+from models.layers import EdgeConvLayer, EmbeddingLayer
 #torch.autograd.set_detect_anomaly(True)
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -274,18 +273,17 @@ class DenseAE(torch.nn.Module):
 
 
 class IDEC(nn.Module):
-
     def __init__(self,
                 AE,
                 input_shape, 
                 hidden_channels,
                 latent_dim,
                 n_clusters,
-                alpha=1,
                 device,
+                alpha=1,
                 pretrain_path='data_dense/dense_ae_pretrain.pkl'):
         super(IDEC, self).__init__()
-        self.alpha = 1.0
+        self.alpha = alpha
         self.device = device
         self.pretrain_path = pretrain_path
 
@@ -295,13 +293,6 @@ class IDEC(nn.Module):
         self.cluster_layer = Parameter(torch.Tensor(n_clusters, latent_dim))
         torch.nn.init.xavier_normal_(self.cluster_layer.data)
 
-    def pretrain(self, path=''):
-        if path == '':
-            pretrain_ae(self.ae)
-        # load pretrain weights
-        self.ae.load_state_dict(torch.load(self.pretrain_path))
-        self.ae.to(self.device)
-        print('load pretrained ae from', path)
 
     def forward(self, data):
         x_bar, x_global_bar, z = self.ae(data)
@@ -329,13 +320,8 @@ class IDEC(nn.Module):
         self.cluster_layer.data = torch.from_numpy(cc).to(self.device)
 
 
-    def validateOnCompleteTestData(self,true_labels,pred_labels,latent_pred):
+    def validateOnCompleteTestData(self,true_labels,pred_labels):
         self.eval()
-        #reshape (maybe should be done outside of the function)
-        pred_labels = np.reshape(pred_labels,pred_labels.shape[0]*pred_labels.shape[1])
-        true_labels = np.reshape(true_labels,true_labels.shape[0]*true_labels.shape[1])
-        latent_pred = np.reshape(latent_pred,(latent_pred.shape[0]*latent_pred.shape[1],latent_pred.shape[2]))
-
         acc,reassignment = cluster_acc(true_labels, pred_labels)
         nmi = nmi_score(true_labels, pred_labels)
         ari = ari_score(true_labels, pred_labels)
