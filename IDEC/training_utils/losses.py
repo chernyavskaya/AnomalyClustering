@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from torch.nn import Linear
 from torch.autograd import Variable
 
+from torch_geometric.utils import from_scipy_sparse_matrix, to_dense_batch
 
 eps = 1e-12
 PI = math.pi

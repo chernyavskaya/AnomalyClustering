@@ -33,7 +33,8 @@ from torch_geometric.utils import from_scipy_sparse_matrix, to_dense_batch
 from torch_geometric.data import Data, Batch, DataLoader
 from torch.utils.data import DataLoader as DataLoaderTorch
 
-from utils import GraphDataset, cluster_acc
+from data_utils.data_processing import GraphDataset
+from training_utils.metrics import cluster_acc
 from torch_scatter import scatter_mean,scatter_max
 
 import os.path as osp
@@ -222,7 +223,7 @@ class EdgeConvLayer(nn.Module):
         return h
 
 class GraphAE(torch.nn.Module):
-  def __init__(self, input_shape, hidden_channels,latent_dim,activation=nn.LeakyReLU(negative_slope=0.1),input_shape_global = 2):
+  def __init__(self, input_shape, hidden_channels,latent_dim,activation=nn.LeakyReLU(negative_slope=0.5),input_shape_global = 2):
     super(GraphAE, self).__init__()
 
     #Which main block to use for the architecture
@@ -695,7 +696,8 @@ if __name__ == "__main__":
     #pid_weight = torch.tensor([1./0.52,1./0.37,1./0.025,1./0.016,1./0.06]).to(device)
     #pid_weight = torch.tensor([1.,1.4,20.,30.,9.]).to(device)
     #pid_weight = torch.tensor([1.,1.4,10.,10.,10.]).to(device)
-    pid_weight = torch.tensor([1.,1.4,5.,5.]).to(device)
+    #pid_weight = torch.tensor([1.,1.4,5.,5.]).to(device)
+    pid_weight = torch.tensor([1.0000,  1.4178, 20.6579, 33.1832]).to(device)
     #pid_weight = torch.tensor([1.3,1.,12.,19.]).to(device) #4 clasess without met , 11 particles
     #pid_weight = torch.tensor([5,1.,12.,19.]).to(device) #4 clasess without met, 7 particles
     #pid_weight = torch.tensor([1.3,1.,7.,5.]).to(device) #4 clasess without met , 11 particles

@@ -1,5 +1,7 @@
 import torch
 import torch.nn as nn
+from torch_geometric.nn import Sequential, GCN, GCNConv, EdgeConv, GATConv, GATv2Conv, global_mean_pool, DynamicEdgeConv, BatchNorm
+
 
 class EmbeddingLayer(nn.Module):
     """
@@ -11,7 +13,7 @@ class EmbeddingLayer(nn.Module):
 
     def __init__(self, emb_szs):
         super().__init__()
-        self.embeddings = nn.ModuleList([Embedding(in_sz, out_sz) for in_sz, out_sz in emb_szs])
+        self.embeddings = nn.ModuleList([nn.Embedding(in_sz, out_sz) for in_sz, out_sz in emb_szs])
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = [emb(x[..., i]) for i, emb in enumerate(self.embeddings)]

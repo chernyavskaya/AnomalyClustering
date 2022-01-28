@@ -22,7 +22,7 @@ def target_distribution(q):
     return (weight.t() / weight.sum(1)).t()
 
 
-def train_test_ae_graph(model,loader,optimizer,device,mode='test'):
+def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight,mode='test'):
     if mode=='test':
         model.eval()
     else:
@@ -50,7 +50,7 @@ def train_test_ae_graph(model,loader,optimizer,device,mode='test'):
 
         #energy_loss  = huber_loss(x[:,[model.energy_idx,model.pt_idx]],x_bar[:,[model.num_pid_classes-1 + model.energy_idx, model.num_pid_classes-1 + model.pt_idx]],xy_idx, yx_idx)
 
-        nll_loss = nn.NLLLoss(reduction='mean',weight=pid_weight)
+        nll_loss = torch.nn.NLLLoss(reduction='mean',weight=pid_weight)
         pid_loss = categorical_loss(x[:,0],x_bar[:,0:model.num_pid_classes],xy_idx, yx_idx,nll_loss) #target, reco
 
         loss = reco_loss  + pid_loss_weight*pid_loss + met_loss_weight*met_loss #+ energy_loss_weight*energy_loss
@@ -68,7 +68,7 @@ def train_test_ae_graph(model,loader,optimizer,device,mode='test'):
     return total_loss / (i + 1) , total_reco_loss / (i + 1), total_pid_loss/(i+1), total_energy_loss/(i+1),total_met_loss/(i+1)
 
 
-def train_test_idec_graph(model,loader,p_all,optimizer,device,gamma,pid_loss_weight,met_loss_weight,energy_loss,mode='test'):
+def train_test_idec_graph(model,loader,p_all,optimizer,device,gamma,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight,mode='test'):
     if mode=='test':
         model.eval()
     else:
@@ -78,7 +78,7 @@ def train_test_idec_graph(model,loader,p_all,optimizer,device,gamma,pid_loss_wei
     for i, data in enumerate(loader):
         data = data.to(device)
         x = data.x.to(device)
-        x_met = data.x_met.reshape((-1,model.input_shape_global)).to(device)
+        x_met = data.x_met.reshape((-1,model.ae.input_shape_global)).to(device)
         batch_index = data.batch.to(device)
 
         if mode=='train':
@@ -88,16 +88,16 @@ def train_test_idec_graph(model,loader,p_all,optimizer,device,gamma,pid_loss_wei
         #loss = F.mse_loss(x_bar, x) 
         #loss, xy_idx, yx_idx = chamfer_loss(x_embedded,x_bar,batch_index)
         #reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.ae.num_pid_classes:],batch_index)
-        #reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,[model.eta_idx,model.phi_idx]],x_bar[:,[model.num_pid_classes-1 + model.eta_idx, model.num_pid_classes-1 + model.phi_idx]],batch_index)
+        #reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,[model.ae.eta_idx,model.ae.phi_idx]],x_bar[:,[model.ae.num_pid_classes-1 + model.ae.eta_idx, model.ae.num_pid_classes-1 + model.ae.phi_idx]],batch_index)
 
-        reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.num_pid_classes:],batch_index)
+        reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.ae.num_pid_classes:],batch_index)
 
         met_loss = global_met_loss(x_met, x_met_bar)
 
-        #energy_loss  = huber_loss(x[:,[model.energy_idx,model.pt_idx]],x_bar[:,[model.num_pid_classes-1 + model.energy_idx, model.num_pid_classes-1 + model.pt_idx]],xy_idx, yx_idx)
+        #energy_loss  = huber_loss(x[:,[model.ae.energy_idx,model.ae.pt_idx]],x_bar[:,[model.ae.num_pid_classes-1 + model.ae.energy_idx, model.ae.num_pid_classes-1 + model.ae.pt_idx]],xy_idx, yx_idx)
 
-        nll_loss = nn.NLLLoss(reduction='mean',weight=pid_weight)
-        pid_loss = categorical_loss(x[:,0],x_bar[:,0:model.num_pid_classes],xy_idx, yx_idx,nll_loss) #target, reco
+        nll_loss = torch.nn.NLLLoss(reduction='mean',weight=pid_weight)
+        pid_loss = categorical_loss(x[:,0],x_bar[:,0:model.ae.num_pid_classes],xy_idx, yx_idx,nll_loss) #target, reco
 
         kl_loss = F.kl_div(q.log(), p_all[i],reduction='batchmean')
         loss = gamma * kl_loss + reco_loss + pid_loss_weight*pid_loss + met_loss_weight*met_loss #+ energy_loss_weight*energy_loss 
@@ -119,16 +119,13 @@ def train_test_idec_graph(model,loader,p_all,optimizer,device,gamma,pid_loss_wei
 
 
 
-def pretrain_ae_graph(model,train_loader,test_loader,optimizer,n_epochs,pretrain_path,device):
+def pretrain_ae_graph(model,train_loader,test_loader,optimizer,n_epochs,pretrain_path,device,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight):
     '''
     pretrain autoencoder for graph
     '''
-   #train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True,drop_last=True) #,num_workers=5
-   # print(model)
-  #  optimizer = Adam(model.parameters(), lr=lr)
     for epoch in range(n_epochs):
-        train_loss , train_reco_loss, train_pid_loss, train_energy_loss, train_met_loss = train_test_ae_graph(model,train_loader,optimizer,device,mode='train')
-        test_loss , test_reco_loss, test_pid_loss, test_energy_loss, test_met_loss = train_test_ae_graph(model,test_loader,optimizer,device,mode='test')
+        train_loss , train_reco_loss, train_pid_loss, train_energy_loss, train_met_loss = train_test_ae_graph(model,train_loader,optimizer,device,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight,mode='train')
+        test_loss , test_reco_loss, test_pid_loss, test_energy_loss, test_met_loss = train_test_ae_graph(model,test_loader,optimizer,device,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight,mode='test')
 
         print("epoch {} : TRAIN : total loss={:.4f}, reco loss={:.4f}, pid loss={:.4f}, energy loss={:.4f}, met loss={:.4f}  ".format(epoch, train_loss , train_reco_loss, train_pid_loss, train_energy_loss, train_met_loss))
         print("epoch {} : TEST : total loss={:.4f}, reco loss={:.4f}, pid loss={:.4f}, energy loss={:.4f}, met loss={:.4f}  ".format(epoch,test_loss , test_reco_loss, test_pid_loss, test_energy_loss, test_met_loss ))
@@ -190,7 +187,7 @@ def train_test_idec_dense(model,loader,p_all,optimizer,device,gamma,mode='test')
         if mode=='train':
             loss.backward()
             optimizer.step()
-    return total_loss / (i + 1), total_reco_loss / (i + 1), total_kl_loss / (i + 1)
+    return total_loss / (i + 1),  total_kl_loss / (i + 1), total_reco_loss / (i + 1)
 
 
 

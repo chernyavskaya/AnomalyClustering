@@ -11,9 +11,10 @@ import numpy as np
 import h5py, json, glob, tqdm, math, random
 
 from sklearn.cluster import MiniBatchKMeans, KMeans
-
 from sklearn.metrics.cluster import normalized_mutual_info_score as nmi_score
 from sklearn.metrics import adjusted_rand_score as ari_score
+from scipy.sparse import csr_matrix
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -24,17 +25,12 @@ from torch.nn import ModuleList
 from torch.nn import Embedding
 from torch.autograd import Variable
 
-from scipy.sparse import csr_matrix
 from torch_geometric.nn import Sequential, GCN, GCNConv, EdgeConv, GATConv, GATv2Conv, global_mean_pool, DynamicEdgeConv, BatchNorm
-
 from torch_geometric.utils import from_scipy_sparse_matrix, to_dense_batch
-
-from torch_geometric.data import Data, Batch, DataLoader
-from torch.utils.data import DataLoader as DataLoaderTorch
-
-from training_utils.metrics import cluster_acc
 from torch_scatter import scatter_mean,scatter_max
 
+from training_utils.metrics import cluster_acc
+from training_utils.losses import cycle_by_2pi
 from models.layers import EdgeConvLayer, EmbeddingLayer
 #torch.autograd.set_detect_anomaly(True)
 
@@ -45,12 +41,12 @@ TWOPI = 2*math.pi
 
 
 class GraphAE(torch.nn.Module):
-  def __init__(self, input_shape, hidden_channels,latent_dim,activation=nn.LeakyReLU(negative_slope=0.1),input_shape_global = 2):
+  def __init__(self, input_shape, hidden_channels,latent_dim,activation=nn.LeakyReLU(negative_slope=0.1),dropout=0.05,input_shape_global = 2):
     super(GraphAE, self).__init__()
 
     #Which main block to use for the architecture
     layer = EdgeConvLayer # EdgeConvLayer #GCNConv #GCN
-    layer_kwargs = {'act':activation}
+    layer_kwargs = {'act':activation, 'dropout':dropout}
     if layer == GCN :
         layer_kwargs['num_layers'] = 1
 

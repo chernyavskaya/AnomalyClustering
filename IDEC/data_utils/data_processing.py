@@ -1,7 +1,10 @@
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-from  torch_geometric.data import Dataset as PyGDataset
+from torch_geometric.data import Dataset as PyGDataset
+from torch_geometric.data import Data
+from torch_geometric.utils import from_scipy_sparse_matrix, to_dense_batch
+from scipy.sparse import csr_matrix
 
 #def load_mnist(path='./IDEC_pytorch/data/mnist.npz'):
 def load_mnist(path='./data/mnist.npz'):
@@ -78,7 +81,7 @@ def get_relative_weights(data,mode='max'):
         weight = frequencies[:,-1]/np.sum(frequencies[:,-1])
     else :
         print('Mode {} is unknown. The available options are : max and sum'.format(mode))
-    return weight
+    return weight.astype(float)
 
 def make_adjacencies(particles):
     real_p_mask = particles[:,:,1] > 0. # construct mask for real particles
@@ -158,8 +161,7 @@ def prepare_graph_datas(file_dataset,n_particles,n_top_proc = -1,connect_only_re
     datas = [Data(x=x_event, edge_index=edge_index_event,y=torch.unsqueeze(y_event, 0),x_met=x_met_event) 
     for x_event,edge_index_event,y_event,x_met_event in zip(x,edge_index,y,x_met)]
     print('Dataset of {} events prepared'.format(tot_evt))
-    graph_dataset  = GraphDataset(datas)
-    return datas,graph_dataset
+    return file_dataset,datas
 
 
 
