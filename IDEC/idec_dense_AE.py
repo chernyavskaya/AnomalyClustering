@@ -56,6 +56,9 @@ def cycle_by_2pi(in_tensor):
 
 
 def huber_mask(inputs, outputs):
+    #the masking is already applied at the level of output nodes
+    #input_zeros_mask = torch.ne(inputs,0).float().to(inputs.device)
+    #outputs= input_zeros_mask * outputs
     # we might want to introduce different weighting to the parts of the loss with  jets/muons/...
     loss_fnc = torch.nn.HuberLoss(delta=10.0)
     loss = loss_fnc(inputs,outputs)
@@ -64,7 +67,7 @@ def huber_mask(inputs, outputs):
 
 
 class DenseAE(torch.nn.Module):
-  def __init__(self, input_shape, hidden_channels,latent_dim,activation=nn.LeakyReLU(negative_slope=0.5),input_shape_global = 2):
+  def __init__(self, input_shape, hidden_channels,latent_dim,activation=nn.LeakyReLU(negative_slope=0.5),dropout=0.05):
     super(DenseAE, self).__init__()
 
     self.activation = activation 
@@ -86,9 +89,11 @@ class DenseAE(torch.nn.Module):
     self.enc_convs = ModuleList()  
     self.enc_convs.append(Linear(self.input_shape, hidden_channels[0]))
     self.enc_convs.append(nn.BatchNorm1d(hidden_channels[0]))
+    self.enc_convs.append(nn.Dropout(p=dropout))
     for i in range(0,len(hidden_channels)-1):
         self.enc_convs.append(Linear(hidden_channels[i], hidden_channels[i+1]))
         self.enc_convs.append(nn.BatchNorm1d(hidden_channels[i+1]))
+        self.enc_convs.append(nn.Dropout(p=dropout))
     self.num_enc_convs  = len(self.enc_convs)
     self.z_layer = Linear(hidden_channels[-1], latent_dim) 
 
@@ -97,9 +102,11 @@ class DenseAE(torch.nn.Module):
     self.dec_convs = ModuleList()
     self.dec_convs.append(Linear(latent_dim, hidden_channels[-1]))
     self.dec_convs.append(nn.BatchNorm1d(hidden_channels[-1]))
+    self.dec_convs.append(nn.Dropout(p=dropout))
     for i in range(len(hidden_channels)-1,0,-1):
         self.dec_convs.append(Linear(hidden_channels[i], hidden_channels[i-1]))
         self.dec_convs.append(nn.BatchNorm1d(hidden_channels[i-1]))
+        self.dec_convs.append(nn.Dropout(p=dropout))
     self.num_dec_convs  = len(self.dec_convs)
     self.x_bar_layer = Linear(hidden_channels[0], self.input_shape)
 
@@ -132,7 +139,8 @@ class DenseAE(torch.nn.Module):
     for i_obj,num_obj in enumerate(self.order_num_objets):
         x_bar[:,self.access_idx[i_obj]+i_feat:self.access_idx[i_obj]+num_obj*self.num_feats:self.num_feats] = PI*torch.tanh(dec[:,self.access_idx[i_obj]+i_feat:self.access_idx[i_obj]+num_obj*self.num_feats:self.num_feats])
     for i_feat in [i_energy, i_pt]:
-        x_bar[:,self.access_idx[i_obj]+i_feat:self.access_idx[i_obj]+num_obj*self.num_feats:self.num_feats] = F.relu(dec[:,self.access_idx[i_obj]+i_feat:self.access_idx[i_obj]+num_obj*self.num_feats:self.num_feats])
+        for i_obj,num_obj in enumerate(self.order_num_objets):
+            x_bar[:,self.access_idx[i_obj]+i_feat:self.access_idx[i_obj]+num_obj*self.num_feats:self.num_feats] = F.relu(dec[:,self.access_idx[i_obj]+i_feat:self.access_idx[i_obj]+num_obj*self.num_feats:self.num_feats])
     
     x_bar = input_zeros_mask * x_bar
 
@@ -214,7 +222,7 @@ def pretrain_ae(model):
     '''
     pretrain autoencoder
     '''
-    train_loader = DataLoaderTorch(dataset, batch_size=args.batch_size, shuffle=True,drop_last=True) #,num_workers=5
+    train_loader = DataLoaderTorch(dataset, batch_size=args.batch_size, shuffle=False,drop_last=True) #,num_workers=5
     print(model)
     optimizer = Adam(model.parameters(), lr=args.lr)
     for epoch in range(args.n_epochs):
@@ -380,7 +388,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', default=256, type=int)
     parser.add_argument('--latent_dim', default=5, type=int)
     parser.add_argument('--input_shape', default=[124], type=int)
-    parser.add_argument('--hidden_channels', default=[70,50,30,10 ], type=int)   
+    parser.add_argument('--hidden_channels', default=[50,30,10], type=int)   
     parser.add_argument('--pretrain_path', type=str, default='data_dense/dense_ae_pretrain.pkl') 
     parser.add_argument('--gamma',default=100.,type=float,help='coefficient of clustering loss')
     parser.add_argument('--update_interval', default=1, type=int)
