@@ -33,6 +33,7 @@ from torch_geometric.utils import from_scipy_sparse_matrix, to_dense_batch
 from torch_geometric.data import Data, Batch, DataLoader
 from torch.utils.data import DataLoader as DataLoaderTorch
 
+sys.path.append(os.path.abspath(os.path.join('../')))
 from data_utils.data_processing import GraphDataset, DenseEventDataset
 from training_utils.metrics import cluster_acc
 from torch_scatter import scatter_mean,scatter_max

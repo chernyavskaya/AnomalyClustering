@@ -7,7 +7,7 @@
 # Distributed under terms of the MIT license.
 from __future__ import print_function, division
 import setGPU
-import os
+import os,sys
 import argparse
 import numpy as np
 from sklearn.cluster import KMeans
@@ -20,9 +20,10 @@ from torch.nn.parameter import Parameter
 from torch.optim import Adam
 from torch.utils.data import DataLoader
 from torch.nn import Linear
-
-from utils import MnistDataset, cluster_acc
-import setGPU
+ 
+sys.path.append(os.path.abspath(os.path.join('../')))
+from data_utils.data_processing import MnistDataset
+from training_utils.metrics import cluster_acc
 
 class AE(nn.Module):
 
@@ -75,7 +76,7 @@ class IDEC(nn.Module):
                  n_z,
                  n_clusters,
                  alpha=1,
-                 pretrain_path='data/ae_mnist.pkl'):
+                 pretrain_path='../data/ae_mnist.pkl'):
         super(IDEC, self).__init__()
         self.alpha = 1.0
         self.pretrain_path = pretrain_path
@@ -172,7 +173,7 @@ def train_idec():
     model.to(device)
 
 
-    model.pretrain('data/ae_mnist.pkl')
+    model.pretrain('../data/ae_mnist.pkl')
     #model.pretrain()
 
     train_loader = DataLoader(
@@ -262,7 +263,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', default=256, type=int)
     parser.add_argument('--n_z', default=10, type=int)
     parser.add_argument('--dataset', type=str, default='mnist')
-    parser.add_argument('--pretrain_path', type=str, default='data/ae_mnist')
+    parser.add_argument('--pretrain_path', type=str, default='../data/ae_mnist')
     parser.add_argument(
         '--gamma',
         default=0.1,
@@ -278,7 +279,7 @@ if __name__ == "__main__":
     #device = 'cpu'
 
     if args.dataset == 'mnist':
-        args.pretrain_path = 'data/ae_mnist.pkl'
+        args.pretrain_path = '../data/ae_mnist.pkl'
         #args.n_clusters = 10 #try different
         args.n_input = 784
         dataset = MnistDataset()

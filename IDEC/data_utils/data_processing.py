@@ -1,3 +1,4 @@
+import os,sys
 import numpy as np
 import torch
 from torch.utils.data import Dataset
@@ -6,8 +7,7 @@ from torch_geometric.data import Data
 from torch_geometric.utils import from_scipy_sparse_matrix, to_dense_batch
 from scipy.sparse import csr_matrix
 
-#def load_mnist(path='./IDEC_pytorch/data/mnist.npz'):
-def load_mnist(path='./data/mnist.npz'):
+def load_mnist(path='../data/mnist.npz'):
 
     f = np.load(path)
 

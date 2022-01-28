@@ -7,7 +7,7 @@
 # Distributed under terms of the MIT license.
 from __future__ import print_function, division
 import setGPU
-import os
+import os,sys
 import argparse
 import numpy as np
 from sklearn.cluster import MiniBatchKMeans, KMeans
@@ -22,7 +22,9 @@ from torch.optim import Adam
 from torch.utils.data import DataLoader
 from torch.nn import Linear
 
-from utils import MnistDataset, cluster_acc
+sys.path.append(os.path.abspath(os.path.join('../')))
+from data_utils.data_processing import MnistDataset
+from training_utils.metrics import cluster_acc
 
 class AE(nn.Module):
 
@@ -295,8 +297,4 @@ if __name__ == "__main__":
 
     if args.dataset == 'mnist':
         args.pretrain_path = 'data/ae_mnist.pkl'
-        #args.n_clusters = 10 #try different
-        args.n_input = 784
-        dataset = MnistDataset()
-    print(args)
-    train_idec()
+        #args.n_clusters = 10
