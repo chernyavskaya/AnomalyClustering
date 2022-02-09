@@ -26,9 +26,8 @@ import data_utils.data_processing as data_proc
 from data_utils.data_processing import GraphDataset, DenseEventDataset
 from training_utils.metrics import cluster_acc
 from models.models import DenseAE, GraphAE, IDEC 
-from training_utils.training import target_distribution,pretrain_ae_graph, train_test_ae_graph,train_test_idec_graph
 from training_utils.activation_funcs  import get_activation_func
-from training_utils.training import pretrain_ae_dense,train_test_ae_dense,train_test_idec_dense, target_distribution, save_ckp, create_ckp, load_ckp
+from training_utils.training import pretrain_ae_dense,train_test_ae_dense,train_test_idec_dense,pretrain_ae_graph, train_test_ae_graph,train_test_idec_graph, target_distribution, save_ckp, create_ckp, load_ckp,export_jsondump
 
 import os.path as osp
 sys.path.append(os.path.abspath(os.path.join('../../')))
@@ -40,6 +39,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
+
 def train_idec():
 
     model_AE = GraphAE(input_shape = args.input_shape,
@@ -49,8 +49,8 @@ def train_idec():
                         dropout=args.dropout,
                         input_shape_global = 2)
     if args.load_ae!='' :
-        if osp.isfile(osp.join(output_path+'/saved_models/',args.load_ae)):
-            pretrain_path = output_path+'/saved_models/'+args.load_ae
+        if osp.isfile(osp.join(output_path,args.load_ae)):
+            pretrain_path = output_path+args.load_ae
         else :
             print('Requested pretrained model is not found. Exiting.'.format(args.load_ae))
             exit()
@@ -58,8 +58,8 @@ def train_idec():
         pretrain_path = output_path+'/pretrained_AE.pkl'
 
     if args.load_idec!='':
-        if osp.isfile(osp.join(output_path+'/saved_models/',args.load_idec)):
-            idec_path = output_path+'/saved_models/'+args.load_idec
+        if osp.isfile(osp.join(output_path,args.load_idec)):
+            idec_path = output_path+args.load_idec
         else :
             print('Requested idec model is not found. Exiting.'.format(args.load_idec))
             exit()
@@ -81,12 +81,13 @@ def train_idec():
 
     start_epoch=0
     optimizer_ae = Adam(model.parameters(), lr=args.lr)
-    scheduler_ae = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, threshold=10e-8,verbose=True,factor=0.5)
+    scheduler_ae = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_ae, patience=3, threshold=10e-8,verbose=True,factor=0.5)
     if args.retrain_ae:
         if args.load_ae!='' :
             model.ae, optimizer_ae, scheduler_ae, start_epoch, _,_ = load_ckp(model.pretrain_path, model.ae, optimizer_ae, scheduler_ae)
             model.ae.to(device)
         summary_writer = SummaryWriter(log_dir=osp.join(output_path,'tensorboard_logs_ae/'))
+
         pretrain_ae_graph(model.ae,train_loader,test_loader,optimizer_ae,start_epoch,start_epoch+args.n_epochs,pretrain_path,device,scheduler_ae,summary_writer,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight)
         summary_writer.close()
     else :
@@ -188,7 +189,8 @@ def train_idec():
             summary_writer.add_scalar("Validaton "+ name, loss, epoch)   
         for layer_name, weight in model.named_parameters():
             summary_writer.add_histogram(layer_name,weight, epoch)
-            summary_writer.add_histogram(f'{layer_name}.grad',weight.grad, epoch)
+            if layer_name!='cluster_layer':
+                summary_writer.add_histogram(f'{layer_name}.grad',weight.grad, epoch)
 
         if epoch>10 and test_loss < best_test_loss*1.01: #allow variation within 1%
             best_test_loss = test_loss
@@ -202,6 +204,8 @@ def train_idec():
         
     checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
     save_ckp(checkpoint, idec_path.replace('.pkl','_epoch_{}.pkl'.format(epoch+1)))
+
+    export_jsondump(summary_writer)
     summary_writer.close()
 
 
@@ -235,23 +239,22 @@ if __name__ == "__main__":
         print('Please set run number to save the output. Exiting.')
         exit()
     args.activation = get_activation_func(args.activation)
-    base_output_path = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/AnomalyClustering/trained_output/graph/'
-    output_path = base_output_path+'run_{}'.format(args.n_run)
+    base_output_path = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/autoencoder_for_anomaly/clustering/trained_output/graph/'
+    output_path = base_output_path+'run_{}/saved_models/'.format(args.n_run)
     pathlib.Path(output_path).mkdir(parents=True, exist_ok=True)
-    pathlib.Path(output_path+'/saved_models/').mkdir(parents=True, exist_ok=True)
     args_dict = vars(parser.parse_args())
     save_params_json = json.dumps(args_dict) 
     with open(os.path.join(output_path,'parameters.json'), 'w', encoding='utf-8') as f_json:
         json.dump(save_params_json, f_json, ensure_ascii=False, indent=4)
 
-    DATA_PATH = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/AnomalyClustering/inputs/'
+    DATA_PATH = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/autoencoder_for_anomaly/clustering/inputs/'
     #TRAIN_NAME = 'background_chan3_passed_ae_l1.h5'
     TRAIN_NAME = 'bkg_l1_filtered_1mln.h5'
 
     filename_bg = DATA_PATH + TRAIN_NAME 
     in_file = h5py.File(filename_bg, 'r') 
     #'process_ID', 'D_KL', 'event_ID', 'charge', 'E','pT','eta','phi']
-    file_dataset = np.array(in_file['dataset'])[:,:,[0,2,4,5,6,7]] 
+    file_dataset = np.array(in_file['dataset'])[:1000,:,[0,2,4,5,6,7]] 
     #trying temp to see what happens if we separate peak of 0s from eta and phi (activation function and pi cyclicity was changed in the model accordingly)
     #file_dataset[:,1:,4] = np.where(file_dataset[:,1:,1]==0.,0.,file_dataset[:,1:,4]+3.0)
     #file_dataset[:,1:,5] = np.where(file_dataset[:,1:,1]==0.,0.,file_dataset[:,1:,5]+3.4)

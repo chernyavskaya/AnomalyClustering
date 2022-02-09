@@ -25,7 +25,7 @@ import data_utils.data_processing as data_proc
 from data_utils.data_processing import GraphDataset, DenseEventDataset
 from training_utils.metrics import cluster_acc
 from models.models import DenseAE, IDEC 
-from training_utils.training import pretrain_ae_dense,train_test_ae_dense,train_test_idec_dense, target_distribution, save_ckp, create_ckp
+from training_utils.training import pretrain_ae_dense,train_test_ae_dense,train_test_idec_dense, target_distribution, save_ckp, create_ckp, load_ckp
 from training_utils.activation_funcs  import get_activation_func
 
 import os.path as osp
@@ -47,6 +47,23 @@ def train_idec():
                         latent_dim = args.latent_dim,
                         activation=args.activation,
                         dropout=args.dropout)
+    if args.load_ae!='' :
+        if osp.isfile(osp.join(output_path+'/saved_models/',args.load_ae)):
+            pretrain_path = output_path+'/saved_models/'+args.load_ae
+        else :
+            print('Requested pretrained model is not found. Exiting.'.format(args.load_ae))
+            exit()
+    else :
+        pretrain_path = output_path+'/pretrained_AE.pkl'
+
+    if args.load_idec!='':
+        if osp.isfile(osp.join(output_path+'/saved_models/',args.load_idec)):
+            idec_path = output_path+'/saved_models/'+args.load_idec
+        else :
+            print('Requested idec model is not found. Exiting.'.format(args.load_idec))
+            exit()
+    else :
+        idec_path = output_path+'/idec_model.pkl'
     model = IDEC(AE = model_AE,
                 input_shape = args.input_shape, 
                 hidden_channels = args.hidden_channels,
@@ -169,6 +186,8 @@ if __name__ == "__main__":
     parser.add_argument('--n_top_proc', type=int, default=-1)
     parser.add_argument('--full_kmeans', type=int, default=0)
     parser.add_argument('--retrain_ae', type=int, default=1)
+    parser.add_argument('--load_ae', type=str, default='')
+    parser.add_argument('--load_idec', type=str, default='')
     parser.add_argument('--lr', type=float, default=0.005)
     parser.add_argument('--n_clusters', default=5, type=int)
     parser.add_argument('--batch_size', default=256, type=int)
@@ -188,7 +207,7 @@ if __name__ == "__main__":
         print('Please set run number to save the output. Exiting.')
         exit()
     args.activation = get_activation_func(args.activation)
-    base_output_path = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/AnomalyClustering/trained_output/dense/'
+    base_output_path = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/autoencoder_for_anomaly/clustering/trained_output/dense/'
     output_path = base_output_path+'run_{}'.format(args.n_run)
     pathlib.Path(output_path).mkdir(parents=True, exist_ok=True)
     args_dict = vars(parser.parse_args())
@@ -196,7 +215,7 @@ if __name__ == "__main__":
     with open(os.path.join(output_path,'parameters.json'), 'w', encoding='utf-8') as f_json:
         json.dump(save_params_json, f_json, ensure_ascii=False, indent=4)
 
-    DATA_PATH = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/AnomalyClustering/inputs/'
+    DATA_PATH = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/autoencoder_for_anomaly/clustering/inputs/'
     TRAIN_NAME = 'bkg_l1_filtered_1mln_padded.h5'
     filename_bg = DATA_PATH + TRAIN_NAME 
     in_file = h5py.File(filename_bg, 'r') 

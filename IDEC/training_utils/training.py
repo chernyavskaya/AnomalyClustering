@@ -4,6 +4,7 @@
 import numpy as np
 import tqdm
 import shutil
+import os, json
 
 from sklearn.cluster import MiniBatchKMeans, KMeans
 from sklearn.metrics.cluster import normalized_mutual_info_score as nmi_score
@@ -18,6 +19,61 @@ from torch_geometric.utils import to_dense_batch
 
 from training_utils.metrics import cluster_acc
 from training_utils.losses import chamfer_loss,huber_mask,categorical_loss,huber_loss,global_met_loss,chamfer_loss_split, chamfer_loss_split_parallel
+from tensorboard.backend.event_processing import event_accumulator
+
+def merge_loss_dicts(dict_list):
+    merged_dict = {}
+    for key in dict_list[0]:
+        merged_dict[key] = dict_list[0][key]
+        for i_dict in range(1,len(dict_list)):
+            merged_dict[key] = list(merged_dict[key])
+            if not (set(dict_list[i_dict][key][0]) <= set(merged_dict[key][0])):
+                merged_dict[key][0] += dict_list[i_dict][key][0]
+                merged_dict[key][1] += dict_list[i_dict][key][1]
+    return merged_dict
+
+
+def export_jsondump(writer):
+
+    assert isinstance(writer, torch.utils.tensorboard.SummaryWriter)
+
+    data_dict_list=[]
+    tf_files = [] # -> list of paths from writer.log_dir to all files in that directory
+    for root, dirs, files in os.walk(writer.log_dir):
+        for file in files:
+            if 'events.out.tfevents' in file:
+                tf_files.append(os.path.join(root,file)) # go over every file recursively in the directory
+
+    for file_id, file in enumerate(tf_files):
+
+        path = os.path.join('/'.join(file.split('/')[:-1])) # determine path to folder in which file lies
+        name = 'data_'+str(file_id)
+        #os.path.join(file.split('/')[-2]) if file_id > 0 else os.path.join('data') # seperate file created by add_scalar from add_scalars
+
+        # print(file, '->', path, '|', name)
+
+        event_acc = event_accumulator.EventAccumulator(file)
+        event_acc.Reload()
+        data = {}
+
+        hparam_file = False # I save hparam files as 'hparam/xyz_metric'
+        for tag in sorted(event_acc.Tags()["scalars"]):
+            if tag.split('/')[0] == 'hparam': hparam_file=True # check if its a hparam file
+            step, value = [], []
+
+            for scalar_event in event_acc.Scalars(tag):
+                step.append(scalar_event.step)
+                value.append(scalar_event.value)
+
+            data[tag] = (step, value)
+
+        data_dict_list.append(data)
+        if not hparam_file and bool(data): # if its not a hparam file and there is something in the data -> dump it
+            with open(path+f'/{name}.json', "w") as f:
+                json.dump(data, f)
+    merged_data = merge_loss_dicts(data_dict_list)
+    with open(path+f'/data_merged.json', "w") as f:
+        json.dump(merged_data, f)
 
 
 def save_ckp(state,checkpoint_path):
@@ -221,9 +277,10 @@ def pretrain_ae_graph(model,train_loader,test_loader,optimizer,start_epoch,n_epo
 
         if epoch>10 and test_loss < best_test_loss*1.01: #allow variation within 1%
             best_test_loss = test_loss
-            checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
-            print('New best model saved')
             best_fpath = pretrain_path.replace(pretrain_path.rsplit('/', 1)[-1],'')+'best_model_AE.pkl'
+            checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
+            save_ckp(checkpoint, best_fpath)
+            print('New best model saved')
         if epoch>10 and epoch%10==0:
             checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
             save_ckp(checkpoint, pretrain_path.replace('.pkl','_epoch_{}.pkl'.format(epoch+1)))
@@ -231,6 +288,8 @@ def pretrain_ae_graph(model,train_loader,test_loader,optimizer,start_epoch,n_epo
     checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
     save_ckp(checkpoint, pretrain_path.replace('.pkl','_epoch_{}.pkl'.format(epoch+1)))
     print("model saved to {}.".format(pretrain_path))
+    export_jsondump(summary_writer)
+    summary_writer.close()
 
 
 
@@ -320,9 +379,10 @@ def pretrain_ae_dense(model,train_loader,test_loader,optimizer,start_epoch,n_epo
 
         if epoch>10 and test_loss < best_test_loss*1.01: #allow variation within 1%
             best_test_loss = test_loss
-            checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
-            print('New best model saved')
             best_fpath = pretrain_path.replace(pretrain_path.rsplit('/', 1)[-1],'')+'best_model_AE.pkl'
+            checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
+            save_ckp(checkpoint, best_fpath)
+            print('New best model saved')
         if epoch>10 and epoch%10==0:
             checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
             save_ckp(checkpoint, pretrain_path.replace('.pkl','_epoch_{}.pkl'.format(epoch+1)))
