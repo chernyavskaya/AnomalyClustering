@@ -61,7 +61,7 @@ def train_idec():
 
     if args.load_idec!='':
         if osp.isfile(osp.join(output_path,args.load_idec)):
-            idec_path = output_path+args.load_idec
+            idec_path = output_path+'/'+args.load_idec
         else :
             print('Requested idec model is not found. Exiting.'.format(args.load_idec))
             exit()
@@ -74,8 +74,7 @@ def train_idec():
                 latent_dim = args.latent_dim,
                 n_clusters=args.n_clusters,
                 alpha=1,
-                device=device,
-                pretrain_path=pretrain_path)
+                device=device)
 
     summary.gnn_model_summary(model)
 
@@ -86,15 +85,15 @@ def train_idec():
     scheduler_ae = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_ae, patience=3, threshold=10e-8,verbose=True,factor=0.5)
     if args.retrain_ae:
         if args.load_ae!='' :
-            model.ae, optimizer_ae, scheduler_ae, start_epoch, _,_ = load_ckp(model.pretrain_path, model.ae, optimizer_ae, scheduler_ae)
+            model.ae, optimizer_ae, scheduler_ae, start_epoch, _,_ = load_ckp(pretrain_path, model.ae, optimizer_ae, scheduler_ae)
             model.ae.to(device)
         summary_writer = SummaryWriter(log_dir=osp.join(output_path,'tensorboard_logs_ae/'))
         pretrain_ae_graph(model.ae,train_loader,test_loader,optimizer_ae,start_epoch,start_epoch+args.n_epochs,pretrain_path,device,scheduler_ae,summary_writer,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight)
         summary_writer.close()
     else :
-        model.ae, optimizer_ae, scheduler_ae, start_epoch,_,_ = load_ckp(model.pretrain_path, model.ae, optimizer_ae, scheduler_ae)
+        model.ae, optimizer_ae, scheduler_ae, start_epoch,_,_ = load_ckp(pretrain_path, model.ae, optimizer_ae, scheduler_ae)
         model.ae.to(device)
-        print('load pretrained ae from', model.pretrain_path)
+        print('load pretrained ae from', pretrain_path)
 
 
     start_epoch=0
@@ -226,8 +225,8 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', default=256, type=int)
     parser.add_argument('--latent_dim', default=5, type=int)
     parser.add_argument('--input_shape', default=[16,5], type=int)
-    parser.add_argument('--hidden_channels', default=[8, 12, 16, 20, 25, 30 ], type=int)   #8, 12, 16, 20, 25, 30, 40, 60,50,40,30
-    parser.add_argument('--dropout', default=0.0, type=float)  
+    parser.add_argument('--hidden_channels', default=[8, 16, 25, 30, 40, 50, 60, 80,100], type=int)   #8, 12, 16, 20, 25, 30, 40, 60,50,40,30
+    parser.add_argument('--dropout', default=0.05, type=float)  
     parser.add_argument('--activation', default='leakyrelu_0.5', type=str)  
     parser.add_argument('--n_run', type=int) 
     parser.add_argument('--gamma',default=100.,type=float,help='coefficient of clustering loss')
@@ -242,7 +241,7 @@ if __name__ == "__main__":
         exit()
     args.activation = get_activation_func(args.activation)
     base_output_path = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/autoencoder_for_anomaly/clustering/trained_output/graph/'
-    output_path = base_output_path+'run_{}/saved_models/'.format(args.n_run)
+    output_path = base_output_path+'run_{}/'.format(args.n_run)
     pathlib.Path(output_path).mkdir(parents=True, exist_ok=True)
     pathlib.Path(output_path+'/fig_dir/').mkdir(parents=True, exist_ok=True)
     pathlib.Path(output_path+'/fig_dir/idec/').mkdir(parents=True, exist_ok=True)
@@ -259,7 +258,7 @@ if __name__ == "__main__":
     filename_bg = DATA_PATH + TRAIN_NAME 
     in_file = h5py.File(filename_bg, 'r') 
     #'process_ID', 'D_KL', 'event_ID', 'charge', 'E','pT','eta','phi']
-    file_dataset = np.array(in_file['dataset'])[:10000,:,[0,2,4,5,6,7]] 
+    file_dataset = np.array(in_file['dataset'])[:2000,:,[0,2,4,5,6,7]] 
     #trying temp to see what happens if we separate peak of 0s from eta and phi (activation function and pi cyclicity was changed in the model accordingly)
     #file_dataset[:,1:,4] = np.where(file_dataset[:,1:,1]==0.,0.,file_dataset[:,1:,4]+3.0)
     #file_dataset[:,1:,5] = np.where(file_dataset[:,1:,1]==0.,0.,file_dataset[:,1:,5]+3.4)

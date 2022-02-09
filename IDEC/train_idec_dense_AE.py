@@ -51,8 +51,8 @@ def train_idec():
                         activation=args.activation,
                         dropout=args.dropout)
     if args.load_ae!='' :
-        if osp.isfile(osp.join(output_path+'/saved_models/',args.load_ae)):
-            pretrain_path = output_path+'/saved_models/'+args.load_ae
+        if osp.isfile(osp.join(output_path,args.load_ae)):
+            pretrain_path = output_path+'/'+args.load_ae
         else :
             print('Requested pretrained model is not found. Exiting.'.format(args.load_ae))
             exit()
@@ -60,8 +60,8 @@ def train_idec():
         pretrain_path = output_path+'/pretrained_AE.pkl'
 
     if args.load_idec!='':
-        if osp.isfile(osp.join(output_path+'/saved_models/',args.load_idec)):
-            idec_path = output_path+'/saved_models/'+args.load_idec
+        if osp.isfile(osp.join(output_path,args.load_idec)):
+            idec_path = output_path+'/'+args.load_idec
         else :
             print('Requested idec model is not found. Exiting.'.format(args.load_idec))
             exit()
@@ -73,8 +73,7 @@ def train_idec():
                 latent_dim = args.latent_dim,
                 n_clusters=args.n_clusters,
                 alpha=1,
-                device=device,
-                pretrain_path=output_path+'/pretrained_AE.pkl')
+                device=device)
     idec_path = output_path+'/idec_model.pkl'
     model.to(device)
     summary.gnn_model_summary(model)
@@ -86,15 +85,15 @@ def train_idec():
     scheduler_ae = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_ae, patience=3, threshold=10e-8,verbose=True,factor=0.5)
     if args.retrain_ae:
         if args.load_ae!='' :
-            model.ae, optimizer_ae, scheduler_ae, start_epoch, _,_ = load_ckp(model.pretrain_path, model.ae, optimizer_ae, scheduler_ae)
+            model.ae, optimizer_ae, scheduler_ae, start_epoch, _,_ = load_ckp(pretrain_path, model.ae, optimizer_ae, scheduler_ae)
             model.ae.to(device)
         summary_writer = SummaryWriter(log_dir=osp.join(output_path,'tensorboard_logs_ae/'))
         pretrain_ae_dense(model.ae,train_loader,test_loader,optimizer_ae,start_epoch,start_epoch+args.n_epochs,pretrain_path,device,scheduler_ae,summary_writer)
         summary_writer.close()
     else :
-        model.ae, optimizer_ae, scheduler_ae, start_epoch,_,_ = load_ckp(model.pretrain_path, model.ae, optimizer_ae, scheduler_ae)
+        model.ae, optimizer_ae, scheduler_ae, start_epoch,_,_ = load_ckp(pretrain_path, model.ae, optimizer_ae, scheduler_ae)
         model.ae.to(device)
-        print('load pretrained ae from', model.pretrain_path)
+        print('load pretrained ae from', pretrain_path)
 
 
     start_epoch=0
@@ -222,7 +221,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', default=256, type=int)
     parser.add_argument('--latent_dim', default=5, type=int)
     parser.add_argument('--input_shape', default=[124], type=int)
-    parser.add_argument('--hidden_channels', default=[200,300,100,50,30,10], type=int)  
+    parser.add_argument('--hidden_channels', default=[200,500,200,50,30,10], type=int)  
     parser.add_argument('--dropout', default=0.05, type=float)  
     parser.add_argument('--activation', default='leakyrelu_0.5', type=str)  
     parser.add_argument('--n_run', type=int) 
@@ -251,7 +250,7 @@ if __name__ == "__main__":
     TRAIN_NAME = 'bkg_l1_filtered_1mln_padded.h5'
     filename_bg = DATA_PATH + TRAIN_NAME 
     in_file = h5py.File(filename_bg, 'r') 
-    file_dataset = np.array(in_file['dataset'])[0:2000]
+    file_dataset = np.array(in_file['dataset'])
     file_dataset_1d,_,dataset = data_proc.prepare_1d_datasets(file_dataset,n_top_proc = args.n_top_proc)
 
     train_test_split = 0.9
