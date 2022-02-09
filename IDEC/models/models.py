@@ -56,7 +56,7 @@ class GraphAE(torch.nn.Module):
     self.input_shape_global = input_shape_global
     self.hidden_global = 4*input_shape_global
     self.num_feats = input_shape[1]
-    self.num_pid_classes = 4
+    self.num_pid_classes = 6 #4
     self.idx_cat = [0] #only pid for now
     self.idx_cont =  np.delete(np.arange(self.num_feats), self.idx_cat)
     self.energy_idx, self.pt_idx = 1,2
@@ -163,13 +163,14 @@ class GraphAE(torch.nn.Module):
     x_eta = x[:,[self.num_pid_classes-1+self.eta_idx]]
     x_phi =  x[:,[self.num_pid_classes-1+self.phi_idx]]
     x_energy_pt = x[:,[self.num_pid_classes-1+self.energy_idx,self.num_pid_classes-1+self.pt_idx]]
-    #x_phi = cycle_by_2pi(x_phi)
-    #x_phi = PI*torch.tanh(x_phi)
-    #x_eta = 5.*torch.tanh(x_eta) # have a symmetric activation function that eventually dies out. 
+    x_phi = cycle_by_2pi(x_phi)
+    x_phi = PI*torch.tanh(x_phi)
+    x_eta = 5.*torch.tanh(x_eta) # have a symmetric activation function that eventually dies out. 
 
 #########
-    x_phi = 7.*torch.tanh(x_phi)
-    x_eta = 6.*torch.tanh(x_eta)
+    #this scaling only applies when eta and pt are transformed to be > 0.
+    #x_phi = 7.*torch.tanh(x_phi)
+    #x_eta = 6.*torch.tanh(x_eta)
 ##########
 
     x_energy_pt = F.relu(x_energy_pt)
@@ -248,6 +249,7 @@ class DenseAE(torch.nn.Module):
     dec = self.x_bar_layer(dec)
     #activation depends on a feature
     #relu for E, pt, scaled tanh for phi and eta
+    #should x_bar require gradient here ? 
     x_bar = torch.zeros(dec.shape[0],dec.shape[-1]).to(dec.device)
     i_eta = self.feats.index('eta')
     i_phi = self.feats.index('phi')

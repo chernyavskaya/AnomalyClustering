@@ -8,6 +8,8 @@ from torch.autograd import Variable
 
 from torch_geometric.utils import from_scipy_sparse_matrix, to_dense_batch
 
+from numba import njit, prange
+
 eps = 1e-12
 PI = math.pi
 TWOPI = 2*math.pi
@@ -27,6 +29,83 @@ def huber_mask(inputs, outputs):
     loss_fnc = torch.nn.HuberLoss(delta=10.0)
     loss = loss_fnc(inputs,outputs)
     return loss
+
+
+@njit(parallel=True,nopython=True)
+def chamfer_loss_split_parallel(target_dense, reco_dense, in_pid_dense, out_pid_dense):
+    #In principle we can even do prediction per PID the same way.. but we can only do this if we manage to speed up the implementation
+    #non zero particles : 
+    n_batches = 0
+    eucl_non_zero = 0.
+    eucl_zero = 0.
+    #256 x 17 x 4 -> numpy , paralilize it 
+
+    n_batches = target_dense.shape[0]
+    for ib in prange(n_batches):
+        x_ib = target_dense[ib]
+        y_ib = reco_dense[ib]
+        #construct masks here based on pid 
+        input_non_zeros_mask = np.not_equal(in_pid_dense[ib],0)
+        output_non_zeros_mask = np.not_equal(out_pid_dense[ib],0)
+        x_non_zero = x_ib[input_non_zeros_mask]
+        y_non_zero = y_ib[output_non_zeros_mask]
+        n_in_part = x_non_zero.shape[0]
+        n_out_part = y_non_zero.shape[0]
+        diff_non_zero = np.expand_dims(x_non_zero,1) - np.expand_dims(y_non_zero,0)
+        #diff_non_zero = pairwise_distance_per_item_numpy(x_non_zero,y_non_zero)
+        dist_non_zero =np.sqrt(np.sum(diff_non_zero**2,axis=-1))
+        #dist_non_zero = np.linalg.norm(diff_non_zero, -1,2)
+        #eucl for all particles that are not 0 , normal chamfer 
+        #print(dist_non_zero.shape,np.linalg.norm(diff_non_zero, -1,2))
+        min_dist_xy = np.min(dist_non_zero, axis=-1)
+        min_dist_yx = np.min(dist_non_zero, axis=-2)
+        eucl_non_zero +=  1./2*(np.sum(min_dist_xy)/n_out_part + np.sum(min_dist_yx)/n_in_part)
+
+        y_zero = y_ib[~output_non_zeros_mask]
+        eucl_zero += np.sum(np.linalg.norm(y_zero,axis=-1,ord=2))
+
+        n_batches+=1
+    eucl_non_zero /= n_batches  
+    eucl_zero /= n_batches
+
+    return eucl_non_zero, eucl_zero
+
+def chamfer_loss_split(target, reco, in_pid, out_pid, batch):
+    #In principle we can even do prediction per PID the same way.. but we can only do this if we manage to speed up the implementation
+    #non zero particles : 
+    n_batches = 0
+    eucl_non_zero = 0.
+    eucl_zero = 0.
+    #256 x 17 x 4 -> numpy , paralilize it 
+    for ib in torch.unique(batch):
+        x_ib = target[batch==ib].to(target.device)
+        y_ib = reco[batch==ib].to(target.device)
+        #construct masks here based on pid 
+        input_non_zeros_mask = torch.ne(in_pid[batch==ib],0).to(target.device)
+        output_non_zeros_mask = torch.ne(out_pid[batch==ib].argmax(1),0).to(reco.device)
+        x_non_zero = x_ib[input_non_zeros_mask].to(target.device)
+        y_non_zero = y_ib[output_non_zeros_mask].to(target.device)
+        #add a check that checks if y is not empty. if y is empty then loss should be sum of x_non_zero : torch.sum(torch.norm(x_non_zero,dim=-1,p=2))
+        if len(y_non_zero)==0 and len(x_non_zero)!=0:
+            eucl_non_zero+=torch.sum(torch.norm(x_non_zero,dim=-1,p=2))
+        else:
+            n_in_part = x_non_zero.shape[0]
+            n_out_part = y_non_zero.shape[0]
+            diff_non_zero = pairwise_distance_per_item(x_non_zero,y_non_zero).to(target.device)
+            dist_non_zero = torch.norm(diff_non_zero, dim=-1,p=2).to(target.device)
+            #eucl for all particles that are not 0 , normal chamfer 
+            min_dist_xy = torch.min(dist_non_zero, dim = -1)
+            min_dist_yx = torch.min(dist_non_zero, dim = -2)
+            eucl_non_zero +=  1./2*(torch.sum(min_dist_xy.values)/n_out_part + torch.sum(min_dist_yx.values)/n_in_part)
+
+        y_zero = y_ib[~output_non_zeros_mask].to(target.device)
+        eucl_zero += torch.sum(torch.norm(y_zero,dim=-1,p=2))
+
+        n_batches+=1
+    eucl_non_zero /= n_batches  
+    eucl_zero /= n_batches
+
+    return  eucl_non_zero,eucl_zero
 
 def chamfer_loss(target, reco, batch):
     x = to_dense_batch(target, batch)[0]
@@ -52,6 +131,7 @@ def chamfer_loss(target, reco, batch):
     min_dist_xy = torch.min(dist, dim = -1)  # Get min distance per row - Find the closest input to the output
     min_dist_yx = torch.min(dist, dim = -2)  # Get min distance per column - Find the closest output to the input
     eucl =  1./2*torch.sum(min_dist_xy.values + min_dist_yx.values)
+
     batch_size = x.shape[0]
     num_particles = x.shape[1]
     eucl =  eucl/(batch_size*num_particles)
@@ -144,5 +224,24 @@ def pairwise_distance(x, y):
     y1 = y.repeat(1, num_row, 1).view(batch_size, num_row, -1, vec_dim).to(x.device)
 
     diff = x1 - y1
-    return diff    
+    return diff  
+
+def pairwise_distance_per_item(x, y):
+    #implementation of pairwise distance for each item in a batch. Needed when each batch has different length of x and y, e.g. after masking
+
+    num_row = x.shape[0]
+    num_col = y.shape[0]
+    vec_dim = x.shape[-1]
+
+    x1 = x.repeat(1, 1, num_col).view(-1, num_col, vec_dim).to(x.device)
+    y1 = y.repeat(1, num_row, 1).view(num_row, -1, vec_dim).to(x.device)
+
+    diff = x1 - y1
+    return diff   
+
+@njit(parallel=True)
+def pairwise_distance_per_item_numpy(x, y):
+    #implementation of pairwise distance for each item in a batch. Needed when each batch has different length of x and y, e.g. after masking
+    distances = np.subtract(x[:,np.newaxis,:],y[np.newaxis,:,:])
+    return distances
 

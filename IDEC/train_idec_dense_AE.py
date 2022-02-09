@@ -4,6 +4,8 @@
 from __future__ import print_function, division
 import setGPU
 import os,sys
+import pathlib
+from pathlib import Path
 import argparse
 import numpy as np
 import h5py, json, glob, tqdm, math, random
@@ -23,13 +25,16 @@ import data_utils.data_processing as data_proc
 from data_utils.data_processing import GraphDataset, DenseEventDataset
 from training_utils.metrics import cluster_acc
 from models.models import DenseAE, IDEC 
-from training_utils.training import pretrain_ae_dense,train_test_ae_dense,train_test_idec_dense, target_distribution
+from training_utils.training import pretrain_ae_dense,train_test_ae_dense,train_test_idec_dense, target_distribution, save_ckp, create_ckp
 from training_utils.activation_funcs  import get_activation_func
 
 import os.path as osp
 sys.path.append(os.path.abspath(os.path.join('../../')))
 sys.path.append(os.path.abspath(os.path.join('../')))
 import ADgvae.utils_torch.model_summary as summary
+
+from torch.utils.tensorboard import SummaryWriter
+
 
 #torch.autograd.set_detect_anomaly(True)
 
@@ -49,20 +54,27 @@ def train_idec():
                 n_clusters=args.n_clusters,
                 alpha=1,
                 device=device,
-                pretrain_path=args.pretrain_path)
+                pretrain_path=output_path+'/pretrained_AE.pkl')
+    idec_path = output_path+'/idec_model.pkl'
     model.to(device)
     summary.gnn_model_summary(model)
 
     print(model)
-    optimizer = Adam(model.parameters(), lr=args.lr)
 
     if args.retrain_ae :
-        pretrain_ae_dense(model.ae,train_loader,test_loader,optimizer,args.n_epochs,args.pretrain_path,device)
+        optimizer = Adam(model.parameters(), lr=args.lr)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, threshold=10e-8,verbose=True,factor=0.5)
+        tb = SummaryWriter(log_dir=osp.join(model.pretrain_path.split('/')[0],'tensorboard_logs/'))
+        pretrain_ae_dense(model.ae,train_loader,test_loader,optimizer,args.n_epochs,model.pretrain_path,device,scheduler,tb)
+        tb.close()
     else :
-        model.ae.load_state_dict(torch.load(args.pretrain_path))
+        model.ae.load_state_dict(torch.load(model.pretrain_path))
         model.ae.to(device)
-        print('load pretrained ae from', args.pretrain_path)
+        print('load pretrained ae from', model.pretrain_path)
 
+    #reset optimizers and scheduler for IDEC
+    optimizer = Adam(model.parameters(), lr=args.lr)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, threshold=10e-8,verbose=True,factor=0.5)
     print('Initializing cluster center with pre-trained weights')
     kmeans_initialized = None
     if args.full_kmeans:
@@ -82,7 +94,8 @@ def train_idec():
     pred_labels_last = 0
     delta_label = 1e4
     model.train()
-    for epoch in range(1):#:range(args.n_epochs):
+    best_test_loss=10000.
+    for epoch in range(args.n_epochs_idec):
 
         #evaluation part
         if epoch % args.update_interval == 0:
@@ -121,7 +134,8 @@ def train_idec():
                 print('delta_label {:.4f}'.format(delta_label), '< tol',
                       args.tol)
                 print('Reached tolerance threshold. Stopping training.')
-                torch.save(model.state_dict(), args.pretrain_path.replace('.pkl','_fullmodel_num_clust_{}.pkl'.format(args.n_clusters)))
+                checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
+                save_ckp(checkpoint, idec_path.replace('.pkl','_epoch_{}.pkl'.format(epoch+1)))
                 print("Full model saved")
                 break
 
@@ -131,9 +145,20 @@ def train_idec():
 
         print("epoch {} : TRAIN : total loss={:.4f}, kl loss={:.4f}, reco loss={:.4f}".format(epoch, train_loss, train_kl_loss, train_reco_loss  ))
         print("epoch {} : TEST : total loss={:.4f}, kl loss={:.4f}, reco loss={:.4f}".format(epoch, test_loss, test_kl_loss, test_reco_loss ))
-        if epoch==args.n_epochs-1 :
-            torch.save(model.state_dict(), args.pretrain_path.replace('.pkl','_fullmodel_num_clust_{}.pkl'.format(args.n_clusters)))
-        torch.save(model.state_dict(), args.pretrain_path.replace('.pkl','_fullmodel_num_clust_{}.pkl'.format(args.n_clusters)))
+
+
+        if epoch>10 and test_loss < best_test_loss*1.01: #allow variation within 1%
+            best_test_loss = test_loss
+            checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
+            print('New best model saved')
+            best_fpath = pretrain_path.replace(idec_path.rsplit('/', 1)[-1],'')+'best_model_IDEC.pkl'
+        if epoch>10 and epoch%10==0:
+            checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
+            save_ckp(checkpoint, idec_path.replace('.pkl','_epoch_{}.pkl'.format(epoch+1)))
+
+        
+    checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
+    save_ckp(checkpoint, idec_path.replace('.pkl','_epoch_{}.pkl'.format(epoch+1)))
 
 
 if __name__ == "__main__":
@@ -149,22 +174,33 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', default=256, type=int)
     parser.add_argument('--latent_dim', default=5, type=int)
     parser.add_argument('--input_shape', default=[124], type=int)
-    parser.add_argument('--hidden_channels', default=[50,30,10], type=int)  
+    parser.add_argument('--hidden_channels', default=[200,300,100,50,30,10], type=int)  
     parser.add_argument('--dropout', default=0.05, type=float)  
     parser.add_argument('--activation', default='leakyrelu_0.5', type=str)  
-    parser.add_argument('--pretrain_path', type=str, default='data_dense/dense_ae_pretrain.pkl') 
+    parser.add_argument('--n_run', type=int) 
     parser.add_argument('--gamma',default=100.,type=float,help='coefficient of clustering loss')
     parser.add_argument('--update_interval', default=1, type=int)
     parser.add_argument('--tol', default=0.001, type=float)
     parser.add_argument('--n_epochs',default=100, type=int)
+    parser.add_argument('--n_epochs_idec',default=1, type=int)
     args = parser.parse_args()
+    if args.n_run is None:
+        print('Please set run number to save the output. Exiting.')
+        exit()
     args.activation = get_activation_func(args.activation)
+    base_output_path = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/AnomalyClustering/trained_output/dense/'
+    output_path = base_output_path+'run_{}'.format(args.n_run)
+    pathlib.Path(output_path).mkdir(parents=True, exist_ok=True)
+    args_dict = vars(parser.parse_args())
+    save_params_json = json.dumps(args_dict) 
+    with open(os.path.join(output_path,'parameters.json'), 'w', encoding='utf-8') as f_json:
+        json.dump(save_params_json, f_json, ensure_ascii=False, indent=4)
 
     DATA_PATH = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/AnomalyClustering/inputs/'
-    TRAIN_NAME = 'bkg_sig_0.0156_l1_filtered_padded.h5'
+    TRAIN_NAME = 'bkg_l1_filtered_1mln_padded.h5'
     filename_bg = DATA_PATH + TRAIN_NAME 
     in_file = h5py.File(filename_bg, 'r') 
-    file_dataset = np.array(in_file['dataset'])
+    file_dataset = np.array(in_file['dataset'])[0:2000]
     file_dataset_1d,_,dataset = data_proc.prepare_1d_datasets(file_dataset,n_top_proc = args.n_top_proc)
 
     train_test_split = 0.9
