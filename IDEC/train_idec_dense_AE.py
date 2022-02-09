@@ -76,9 +76,12 @@ def train_idec():
                 device=device)
     idec_path = output_path+'/idec_model.pkl'
     #model.to(device)
-    summary.gnn_model_summary(model)
-
     print(model)
+    summary.gnn_model_summary(model)
+    with open(os.path.join(output_path,'model_summary.txt'), 'w') as f:
+        with redirect_stdout(f):
+            print(model)
+            print(summary.gnn_model_summary(model))
 
     start_epoch=0
     optimizer_ae = Adam(model.parameters(), lr=args.lr)
