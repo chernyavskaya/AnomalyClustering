@@ -89,7 +89,7 @@ def save_ckp(state,checkpoint_path):
     f_path = checkpoint_path
     torch.save(state, f_path)
 
-def load_ckp(checkpoint_fpath, model, optimizer, scheduler):
+def load_ckp(checkpoint_fpath, model, optimizer=None, scheduler=None):
     """
     checkpoint_path: path from where to load checkpoint
     model: model that we want to load checkpoint parameters into       
@@ -101,7 +101,9 @@ def load_ckp(checkpoint_fpath, model, optimizer, scheduler):
     # initialize state_dict from checkpoint to model
     model.load_state_dict(checkpoint['model'])
     # initialize optimizer and scheduler from checkpoint 
-    optimizer.load_state_dict(checkpoint['optimizer'])
+    if optimizer is not None:
+        optimizer.load_state_dict(checkpoint['optimizer'])
+    if scheduler is not None:
     scheduler.load_state_dict(checkpoint['scheduler'])
     # initialize test_loss and and train_loss from checkpoint 
     train_loss = checkpoint['train_loss']

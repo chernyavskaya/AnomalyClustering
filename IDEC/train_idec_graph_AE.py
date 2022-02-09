@@ -258,7 +258,7 @@ if __name__ == "__main__":
     filename_bg = DATA_PATH + TRAIN_NAME 
     in_file = h5py.File(filename_bg, 'r') 
     #'process_ID', 'D_KL', 'event_ID', 'charge', 'E','pT','eta','phi']
-    file_dataset = np.array(in_file['dataset'])[:2000,:,[0,2,4,5,6,7]] 
+    file_dataset = np.array(in_file['dataset'])[:,:,[0,2,4,5,6,7]] 
     #trying temp to see what happens if we separate peak of 0s from eta and phi (activation function and pi cyclicity was changed in the model accordingly)
     #file_dataset[:,1:,4] = np.where(file_dataset[:,1:,1]==0.,0.,file_dataset[:,1:,4]+3.0)
     #file_dataset[:,1:,5] = np.where(file_dataset[:,1:,1]==0.,0.,file_dataset[:,1:,5]+3.4)

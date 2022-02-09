@@ -75,7 +75,7 @@ def train_idec():
                 alpha=1,
                 device=device)
     idec_path = output_path+'/idec_model.pkl'
-    model.to(device)
+    #model.to(device)
     summary.gnn_model_summary(model)
 
     print(model)
