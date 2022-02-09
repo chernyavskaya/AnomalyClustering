@@ -12,10 +12,8 @@ def loss_curves(train_valid_loss_dict, save_path):
         print('Empty dictionary with losses, probably because there was only 1 epoch. Nothing is plotted.')
         return 0
     keys = train_valid_loss_dict.keys()
-    print(keys)
     loss_names = [k.replace('Training ','').replace('Validation ','') for k in keys]
     loss_names = set(loss_names)
-    print(loss_names)
     train_loss_dict, valid_loss_dict = {},{}
     for key in loss_names:
         train_loss_dict[key] = train_valid_loss_dict['Training '+key]
@@ -36,6 +34,7 @@ def loss_curves(train_valid_loss_dict, save_path):
         plot_name =key
         plt.ylabel(plot_name)
         plt.legend(['Train', 'Validation'])
+        plt.subplots_adjust(left=0.15)
         plt.savefig(osp.join(save_path, 'loss_curves_{}.pdf'.format(plot_name.replace(' ','_'))))
         plt.savefig(osp.join(save_path, 'loss_curves_{}.png'.format(plot_name.replace(' ','_'))))
         plt.close()

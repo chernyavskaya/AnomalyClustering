@@ -24,6 +24,8 @@ from tensorboard.backend.event_processing import event_accumulator
 
 def merge_loss_dicts(dict_list):
     merged_dict = {}
+    if len(dict_list)==0:
+        return {}
     for key in dict_list[0]:
         merged_dict[key] = dict_list[0][key]
         for i_dict in range(1,len(dict_list)):
@@ -376,7 +378,7 @@ def pretrain_ae_dense(model,train_loader,test_loader,optimizer,start_epoch,n_epo
         scheduler.step(test_loss)
 
         summary_writer.add_scalar("Training Loss Tot", train_loss, epoch)
-        summary_writer.add_scalar("Valid Loss Tot", test_loss, epoch)
+        summary_writer.add_scalar("Validation Loss Tot", test_loss, epoch)
         for layer_name, weight in model.named_parameters():
             summary_writer.add_histogram(layer_name,weight, epoch)
             summary_writer.add_histogram(f'{layer_name}.grad',weight.grad, epoch)
