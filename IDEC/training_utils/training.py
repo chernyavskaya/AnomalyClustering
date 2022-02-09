@@ -19,6 +19,7 @@ from torch_geometric.utils import to_dense_batch
 
 from training_utils.metrics import cluster_acc
 from training_utils.losses import chamfer_loss,huber_mask,categorical_loss,huber_loss,global_met_loss,chamfer_loss_split, chamfer_loss_split_parallel
+from training_utils.plot_losses import loss_curves
 from tensorboard.backend.event_processing import event_accumulator
 
 def merge_loss_dicts(dict_list):
@@ -67,13 +68,15 @@ def export_jsondump(writer):
 
             data[tag] = (step, value)
 
-        data_dict_list.append(data)
+        if data!={} : 
+            data_dict_list.append(data)
         if not hparam_file and bool(data): # if its not a hparam file and there is something in the data -> dump it
             with open(path+f'/{name}.json', "w") as f:
                 json.dump(data, f)
     merged_data = merge_loss_dicts(data_dict_list)
     with open(path+f'/data_merged.json', "w") as f:
         json.dump(merged_data, f)
+    return merged_data
 
 
 def save_ckp(state,checkpoint_path):
@@ -270,7 +273,7 @@ def pretrain_ae_graph(model,train_loader,test_loader,optimizer,start_epoch,n_epo
         for name, loss in zip(loss_names,[train_loss , train_reco_loss, train_pid_loss, train_energy_loss, train_met_loss,train_reco_zero_loss]):
             summary_writer.add_scalar("Training "+ name, loss, epoch)
         for name, loss in zip(loss_names,[test_loss , test_reco_loss, test_pid_loss, test_energy_loss, test_met_loss,test_reco_zero_loss]):
-            summary_writer.add_scalar("Validaton "+ name, loss, epoch)   
+            summary_writer.add_scalar("Validation "+ name, loss, epoch)   
         for layer_name, weight in model.named_parameters():
             summary_writer.add_histogram(layer_name,weight, epoch)
             summary_writer.add_histogram(f'{layer_name}.grad',weight.grad, epoch)
@@ -288,7 +291,8 @@ def pretrain_ae_graph(model,train_loader,test_loader,optimizer,start_epoch,n_epo
     checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
     save_ckp(checkpoint, pretrain_path.replace('.pkl','_epoch_{}.pkl'.format(epoch+1)))
     print("model saved to {}.".format(pretrain_path))
-    export_jsondump(summary_writer)
+    merged_data = export_jsondump(summary_writer)
+    loss_curves(merged_data, pretrain_path.replace(pretrain_path.rsplit('/', 1)[-1],'')+'/fig_dir/ae/')
     summary_writer.close()
 
 
@@ -390,4 +394,6 @@ def pretrain_ae_dense(model,train_loader,test_loader,optimizer,start_epoch,n_epo
     checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
     save_ckp(checkpoint, pretrain_path.replace('.pkl','_epoch_{}.pkl'.format(epoch+1)))
     print("model saved to {}.".format(pretrain_path))
-
+    merged_data = export_jsondump(summary_writer)
+    loss_curves(merged_data, pretrain_path.replace(pretrain_path.rsplit('/', 1)[-1],'')+'/fig_dir/ae/')
+    summary_writer.close()

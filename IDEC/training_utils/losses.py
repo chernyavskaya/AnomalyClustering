@@ -245,3 +245,4 @@ def pairwise_distance_per_item_numpy(x, y):
     distances = np.subtract(x[:,np.newaxis,:],y[np.newaxis,:,:])
     return distances
 
+

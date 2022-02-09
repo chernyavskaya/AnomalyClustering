@@ -25,8 +25,11 @@ import data_utils.data_processing as data_proc
 from data_utils.data_processing import GraphDataset, DenseEventDataset
 from training_utils.metrics import cluster_acc
 from models.models import DenseAE, IDEC 
-from training_utils.training import pretrain_ae_dense,train_test_ae_dense,train_test_idec_dense, target_distribution, save_ckp, create_ckp, load_ckp
+from training_utils.training import pretrain_ae_dense,train_test_ae_dense,train_test_idec_dense, target_distribution, save_ckp, create_ckp, load_ckp, export_jsondump
 from training_utils.activation_funcs  import get_activation_func
+
+from training_utils.plot_losses import loss_curves
+
 
 import os.path as osp
 sys.path.append(os.path.abspath(os.path.join('../../')))
@@ -78,20 +81,31 @@ def train_idec():
 
     print(model)
 
-    if args.retrain_ae :
-        optimizer = Adam(model.parameters(), lr=args.lr)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, threshold=10e-8,verbose=True,factor=0.5)
-        tb = SummaryWriter(log_dir=osp.join(model.pretrain_path.split('/')[0],'tensorboard_logs/'))
-        pretrain_ae_dense(model.ae,train_loader,test_loader,optimizer,args.n_epochs,model.pretrain_path,device,scheduler,tb)
-        tb.close()
+    start_epoch=0
+    optimizer_ae = Adam(model.parameters(), lr=args.lr)
+    scheduler_ae = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_ae, patience=3, threshold=10e-8,verbose=True,factor=0.5)
+    if args.retrain_ae:
+        if args.load_ae!='' :
+            model.ae, optimizer_ae, scheduler_ae, start_epoch, _,_ = load_ckp(model.pretrain_path, model.ae, optimizer_ae, scheduler_ae)
+            model.ae.to(device)
+        summary_writer = SummaryWriter(log_dir=osp.join(output_path,'tensorboard_logs_ae/'))
+        pretrain_ae_graph(model.ae,train_loader,test_loader,optimizer_ae,start_epoch,start_epoch+args.n_epochs,pretrain_path,device,scheduler_ae,summary_writer,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight)
+        summary_writer.close()
     else :
-        model.ae.load_state_dict(torch.load(model.pretrain_path))
+        model.ae, optimizer_ae, scheduler_ae, start_epoch,_,_ = load_ckp(model.pretrain_path, model.ae, optimizer_ae, scheduler_ae)
         model.ae.to(device)
         print('load pretrained ae from', model.pretrain_path)
 
-    #reset optimizers and scheduler for IDEC
+
+    start_epoch=0
     optimizer = Adam(model.parameters(), lr=args.lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, threshold=10e-8,verbose=True,factor=0.5)
+    summary_writer = SummaryWriter(log_dir=osp.join(output_path,'tensorboard_logs_idec/'))
+    if args.load_idec!='' :
+        model, optimizer, scheduler, start_epoch, _,_ = load_ckp(idec_path, model, optimizer, scheduler)
+    model.to(device)
+
+
     print('Initializing cluster center with pre-trained weights')
     kmeans_initialized = None
     if args.full_kmeans:
@@ -112,7 +126,7 @@ def train_idec():
     delta_label = 1e4
     model.train()
     best_test_loss=10000.
-    for epoch in range(args.n_epochs_idec):
+    for epoch in range(start_epoch,start_epoch+args.n_epochs_idec):
 
         #evaluation part
         if epoch % args.update_interval == 0:
@@ -157,18 +171,29 @@ def train_idec():
                 break
 
         #training part
-        train_loss,train_reco_loss,train_kl_loss = train_test_idec_dense(model,train_loader,p_all,optimizer,device,args.gamma,mode='train')
-        test_loss,test_reco_loss,test_kl_loss = train_test_idec_dense(model,test_loader,p_all,optimizer,device,args.gamma,mode='test')
+        train_loss,train_kl_loss,train_reco_loss = train_test_idec_dense(model,train_loader,p_all,optimizer,device,args.gamma,mode='train')
+        test_loss,test_kl_loss,test_reco_loss = train_test_idec_dense(model,test_loader,p_all,optimizer,device,args.gamma,mode='test')
 
         print("epoch {} : TRAIN : total loss={:.4f}, kl loss={:.4f}, reco loss={:.4f}".format(epoch, train_loss, train_kl_loss, train_reco_loss  ))
         print("epoch {} : TEST : total loss={:.4f}, kl loss={:.4f}, reco loss={:.4f}".format(epoch, test_loss, test_kl_loss, test_reco_loss ))
 
+        scheduler.step(test_loss)
+
+        loss_names=["Loss Tot","Loss KL","Loss Reco"]
+        for name, loss in zip(loss_names,[train_loss,train_kl_loss,train_reco_loss ]):
+            summary_writer.add_scalar("Training "+ name, loss, epoch)
+        for name, loss in zip(loss_names,[test_loss,test_kl_loss,test_reco_loss]):
+            summary_writer.add_scalar("Validation "+ name, loss, epoch)   
+        for layer_name, weight in model.named_parameters():
+            summary_writer.add_histogram(layer_name,weight, epoch)
+            if layer_name!='cluster_layer':
+                summary_writer.add_histogram(f'{layer_name}.grad',weight.grad, epoch)
 
         if epoch>10 and test_loss < best_test_loss*1.01: #allow variation within 1%
             best_test_loss = test_loss
             checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
             print('New best model saved')
-            best_fpath = pretrain_path.replace(idec_path.rsplit('/', 1)[-1],'')+'best_model_IDEC.pkl'
+            best_fpath = idec_path.replace(idec_path.rsplit('/', 1)[-1],'')+'best_model_IDEC.pkl'
         if epoch>10 and epoch%10==0:
             checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
             save_ckp(checkpoint, idec_path.replace('.pkl','_epoch_{}.pkl'.format(epoch+1)))
@@ -176,6 +201,10 @@ def train_idec():
         
     checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
     save_ckp(checkpoint, idec_path.replace('.pkl','_epoch_{}.pkl'.format(epoch+1)))
+
+    merged_data = export_jsondump(summary_writer)
+    loss_curves(merged_data, osp.join(output_path,'fig_dir/idec/'))
+    summary_writer.close()
 
 
 if __name__ == "__main__":
@@ -210,6 +239,9 @@ if __name__ == "__main__":
     base_output_path = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/autoencoder_for_anomaly/clustering/trained_output/dense/'
     output_path = base_output_path+'run_{}'.format(args.n_run)
     pathlib.Path(output_path).mkdir(parents=True, exist_ok=True)
+    pathlib.Path(output_path+'/fig_dir/').mkdir(parents=True, exist_ok=True)
+    pathlib.Path(output_path+'/fig_dir/idec/').mkdir(parents=True, exist_ok=True)
+    pathlib.Path(output_path+'/fig_dir/ae/').mkdir(parents=True, exist_ok=True)
     args_dict = vars(parser.parse_args())
     save_params_json = json.dumps(args_dict) 
     with open(os.path.join(output_path,'parameters.json'), 'w', encoding='utf-8') as f_json:

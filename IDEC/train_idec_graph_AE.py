@@ -29,6 +29,8 @@ from models.models import DenseAE, GraphAE, IDEC
 from training_utils.activation_funcs  import get_activation_func
 from training_utils.training import pretrain_ae_dense,train_test_ae_dense,train_test_idec_dense,pretrain_ae_graph, train_test_ae_graph,train_test_idec_graph, target_distribution, save_ckp, create_ckp, load_ckp,export_jsondump
 
+from training_utils.plot_losses import loss_curves
+
 import os.path as osp
 sys.path.append(os.path.abspath(os.path.join('../../')))
 sys.path.append(os.path.abspath(os.path.join('../')))
@@ -87,7 +89,6 @@ def train_idec():
             model.ae, optimizer_ae, scheduler_ae, start_epoch, _,_ = load_ckp(model.pretrain_path, model.ae, optimizer_ae, scheduler_ae)
             model.ae.to(device)
         summary_writer = SummaryWriter(log_dir=osp.join(output_path,'tensorboard_logs_ae/'))
-
         pretrain_ae_graph(model.ae,train_loader,test_loader,optimizer_ae,start_epoch,start_epoch+args.n_epochs,pretrain_path,device,scheduler_ae,summary_writer,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight)
         summary_writer.close()
     else :
@@ -125,7 +126,7 @@ def train_idec():
     pred_labels_last = 0
     delta_label = 1e4
     model.train()
-    for epoch in range(start_epoch,args.n_epochs_idec):
+    for epoch in range(start_epoch,start_epoch+args.n_epochs_idec):
 
         #evaluation part
         if epoch % args.update_interval == 0:
@@ -186,7 +187,7 @@ def train_idec():
         for name, loss in zip(loss_names,[train_loss,train_kl_loss,train_reco_loss,train_pid_loss,train_energy_loss, train_met_loss]):
             summary_writer.add_scalar("Training "+ name, loss, epoch)
         for name, loss in zip(loss_names,[test_loss,test_kl_loss,test_reco_loss,test_pid_loss,test_energy_loss, test_met_loss]):
-            summary_writer.add_scalar("Validaton "+ name, loss, epoch)   
+            summary_writer.add_scalar("Validation "+ name, loss, epoch)   
         for layer_name, weight in model.named_parameters():
             summary_writer.add_histogram(layer_name,weight, epoch)
             if layer_name!='cluster_layer':
@@ -196,7 +197,7 @@ def train_idec():
             best_test_loss = test_loss
             checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
             print('New best model saved')
-            best_fpath = pretrain_path.replace(idec_path.rsplit('/', 1)[-1],'')+'best_model_IDEC.pkl'
+            best_fpath = idec_path.replace(idec_path.rsplit('/', 1)[-1],'')+'best_model_IDEC.pkl'
         if epoch>10 and epoch%10==0:
             checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
             save_ckp(checkpoint, idec_path.replace('.pkl','_epoch_{}.pkl'.format(epoch+1)))
@@ -205,7 +206,8 @@ def train_idec():
     checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
     save_ckp(checkpoint, idec_path.replace('.pkl','_epoch_{}.pkl'.format(epoch+1)))
 
-    export_jsondump(summary_writer)
+    merged_data = export_jsondump(summary_writer)
+    loss_curves(merged_data, osp.join(output_path,'fig_dir/idec/'))
     summary_writer.close()
 
 
@@ -242,6 +244,9 @@ if __name__ == "__main__":
     base_output_path = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/autoencoder_for_anomaly/clustering/trained_output/graph/'
     output_path = base_output_path+'run_{}/saved_models/'.format(args.n_run)
     pathlib.Path(output_path).mkdir(parents=True, exist_ok=True)
+    pathlib.Path(output_path+'/fig_dir/').mkdir(parents=True, exist_ok=True)
+    pathlib.Path(output_path+'/fig_dir/idec/').mkdir(parents=True, exist_ok=True)
+    pathlib.Path(output_path+'/fig_dir/ae/').mkdir(parents=True, exist_ok=True)
     args_dict = vars(parser.parse_args())
     save_params_json = json.dumps(args_dict) 
     with open(os.path.join(output_path,'parameters.json'), 'w', encoding='utf-8') as f_json:
