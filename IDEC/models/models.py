@@ -31,6 +31,9 @@ from torch_scatter import scatter_mean,scatter_max
 
 from training_utils.metrics import cluster_acc
 from training_utils.losses import cycle_by_2pi
+from training_utils.activation_funcs  import get_activation_func
+from training_utils.training import load_ckp
+
 from models.layers import EdgeConvLayer, EmbeddingLayer
 #torch.autograd.set_detect_anomaly(True)
 
@@ -39,9 +42,48 @@ eps = 1e-12
 PI = math.pi
 TWOPI = 2*math.pi
 
+def load_GraphAE(dictionary, device, checkpoint_path=None ):
+    activation = get_activation_func(dictionary['activation'])
+    model = GraphAE(input_shape = dictionary['input_shape'],
+                    hidden_channels = dictionary['hidden_channels'],
+                    latent_dim = dictionary['latent_dim'],
+                    activation=activation,
+                    dropout=dictionary['dropout'],
+                    num_pid_classes=dictionary['num_pid_classes'],
+                    input_shape_global = 2)
+    if checkpoint_path!=None:
+        model, _, _, _, _,_ = load_ckp(checkpoint_path, model, None, None)
+    model.to(device)
+    return model
+
+def load_DenseAE(dictionary, device, checkpoint_path=None ):
+    activation = get_activation_func(dictionary['activation'])
+    model = DenseAE(input_shape = dictionary['input_shape'],
+                    hidden_channels = dictionary['hidden_channels'],
+                    latent_dim = dictionary['latent_dim'],
+                    activation=activation,
+                    dropout=dictionary['dropout'],)
+    if checkpoint_path!=None:
+        model, _, _, _, _,_ = load_ckp(checkpoint_path, model, None, None)
+    model.to(device)
+    return model
+
+def load_IDEC(model_AE,dictionary, device, checkpoint_path=None ):
+    model = IDEC(AE = model_AE,
+                input_shape = dictionary['input_shape'],
+                hidden_channels = dictionary['hidden_channels'],
+                latent_dim = dictionary['latent_dim'],
+                n_clusters=dictionary['n_clusters'],
+                alpha=1,
+                device=device)
+    if checkpoint_path!=None:
+        model, _, _, _, _,_ = load_ckp(checkpoint_path, model, None, None)
+    model.to(device)
+    return model
+
 
 class GraphAE(torch.nn.Module):
-  def __init__(self, input_shape, hidden_channels,latent_dim,activation=nn.LeakyReLU(negative_slope=0.1),dropout=0.05,input_shape_global = 2):
+  def __init__(self, input_shape, hidden_channels,latent_dim,activation=nn.LeakyReLU(negative_slope=0.1),dropout=0.05,input_shape_global = 2,num_pid_classes=4):
     super(GraphAE, self).__init__()
 
     #Which main block to use for the architecture
@@ -56,7 +98,7 @@ class GraphAE(torch.nn.Module):
     self.input_shape_global = input_shape_global
     self.hidden_global = 4*input_shape_global
     self.num_feats = input_shape[1]
-    self.num_pid_classes = 6 #4
+    self.num_pid_classes = num_pid_classes #4
     self.idx_cat = [0] #only pid for now
     self.idx_cont =  np.delete(np.arange(self.num_feats), self.idx_cat)
     self.energy_idx, self.pt_idx = 1,2

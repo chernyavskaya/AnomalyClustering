@@ -104,7 +104,7 @@ def load_ckp(checkpoint_fpath, model, optimizer=None, scheduler=None):
     if optimizer is not None:
         optimizer.load_state_dict(checkpoint['optimizer'])
     if scheduler is not None:
-    scheduler.load_state_dict(checkpoint['scheduler'])
+        scheduler.load_state_dict(checkpoint['scheduler'])
     # initialize test_loss and and train_loss from checkpoint 
     train_loss = checkpoint['train_loss']
     test_loss = checkpoint['test_loss']
@@ -241,7 +241,7 @@ def train_test_idec_graph(model,loader,p_all,optimizer,device,gamma,pid_weight,p
         reco_loss, reco_zero_loss =  chamfer_loss_split(x[:,1:],x_bar[:,model.ae.num_pid_classes:],x[:,0],x_bar[:,0:model.ae.num_pid_classes],batch_index)
 
         kl_loss = F.kl_div(q.log(), p_all[i],reduction='batchmean')
-        loss = gamma * kl_loss + reco_loss + reco_zero_loss+ pid_loss_weight*pid_loss + met_loss_weight*met_loss #+ energy_loss_weight*energy_loss 
+        loss = gamma * kl_loss + (1.-gamma)*(reco_loss + reco_zero_loss+ pid_loss_weight*pid_loss + met_loss_weight*met_loss) #+ energy_loss_weight*energy_loss 
 
         loss = reco_loss  + pid_loss_weight*pid_loss + met_loss_weight*met_loss #+ energy_loss_weight*energy_loss
         total_loss += loss.item()
@@ -345,11 +345,9 @@ def train_test_idec_dense(model,loader,p_all,optimizer,device,gamma,mode='test')
             optimizer.zero_grad()
         x_bar,_, q ,_ = model(x)
 
-        loss = huber_mask(x,x_bar)
-
         reco_loss = huber_mask(x,x_bar)
         kl_loss = F.kl_div(q.log(), p_all[i],reduction='batchmean')
-        loss = gamma * kl_loss + reco_loss 
+        loss = gamma * kl_loss + (1.-gamma)*reco_loss 
 
         total_loss += loss.item()
         total_reco_loss += reco_loss.item()

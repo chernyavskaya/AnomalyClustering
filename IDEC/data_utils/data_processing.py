@@ -97,9 +97,9 @@ def proprocess_e_pt(file_dataset, idx=[2,3], scale=1.e5,log=True):
 
 def select_top_n_procs(file_dataset,n_proc):
     #Select top N processes only :
-    (unique, counts) = np.unique(file_dataset[:,:,0], return_counts=True)
+    (unique, counts) = np.unique(file_dataset[:,0,0], return_counts=True)
     procs_sorted, counts_sorted = zip(*sorted(zip(unique, counts), key=lambda x: x[1],reverse=True))
-    top_proc_mask = np.isin(file_dataset[:,0,0], procs_sorted[:n_proc]) #choose top 3
+    top_proc_mask = np.isin(file_dataset[:,0,0], procs_sorted[:n_proc])
     return top_proc_mask
 
 def prepare_1d_datasets(file_dataset,n_top_proc = -1):

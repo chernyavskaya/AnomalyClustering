@@ -9,6 +9,8 @@ from pathlib import Path
 import argparse
 import numpy as np
 import h5py, json, glob, tqdm, math, random
+from contextlib import redirect_stdout
+
 
 from sklearn.cluster import MiniBatchKMeans, KMeans
 from sklearn.metrics.cluster import normalized_mutual_info_score as nmi_score
@@ -52,7 +54,7 @@ def train_idec():
                         dropout=args.dropout)
     if args.load_ae!='' :
         if osp.isfile(osp.join(output_path,args.load_ae)):
-            pretrain_path = output_path+'/'+args.load_ae
+            pretrain_path = args.load_ae
         else :
             print('Requested pretrained model is not found. Exiting.'.format(args.load_ae))
             exit()
@@ -60,8 +62,8 @@ def train_idec():
         pretrain_path = output_path+'/pretrained_AE.pkl'
 
     if args.load_idec!='':
-        if osp.isfile(osp.join(output_path,args.load_idec)):
-            idec_path = output_path+'/'+args.load_idec
+        if osp.isfile(args.load_idec):
+            idec_path =args.load_idec
         else :
             print('Requested idec model is not found. Exiting.'.format(args.load_idec))
             exit()
@@ -74,7 +76,6 @@ def train_idec():
                 n_clusters=args.n_clusters,
                 alpha=1,
                 device=device)
-    idec_path = output_path+'/idec_model.pkl'
     #model.to(device)
     print(model)
     summary.gnn_model_summary(model)
@@ -84,11 +85,13 @@ def train_idec():
             print(summary.gnn_model_summary(model))
 
     start_epoch=0
-    optimizer_ae = Adam(model.parameters(), lr=args.lr)
-    scheduler_ae = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_ae, patience=3, threshold=10e-8,verbose=True,factor=0.5)
+    model.ae.to(device)#model has to be on device before constructing optimizers
+    optimizer_ae = Adam(model.ae.parameters(), lr=args.lr)
+    scheduler_ae = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_ae, patience=3, threshold=10e-8,verbose=True,factor=0.1)
     if args.retrain_ae:
         if args.load_ae!='' :
             model.ae, optimizer_ae, scheduler_ae, start_epoch, _,_ = load_ckp(pretrain_path, model.ae, optimizer_ae, scheduler_ae)
+            print(optimizer_ae)
             model.ae.to(device)
         summary_writer = SummaryWriter(log_dir=osp.join(output_path,'tensorboard_logs_ae/'))
         pretrain_ae_dense(model.ae,train_loader,test_loader,optimizer_ae,start_epoch,start_epoch+args.n_epochs,pretrain_path,device,scheduler_ae,summary_writer)
@@ -100,6 +103,7 @@ def train_idec():
 
 
     start_epoch=0
+    model.to(device)
     optimizer = Adam(model.parameters(), lr=args.lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, threshold=10e-8,verbose=True,factor=0.5)
     summary_writer = SummaryWriter(log_dir=osp.join(output_path,'tensorboard_logs_idec/'))
@@ -191,12 +195,14 @@ def train_idec():
             if layer_name!='cluster_layer':
                 summary_writer.add_histogram(f'{layer_name}.grad',weight.grad, epoch)
 
-        if epoch>10 and test_loss < best_test_loss*1.01: #allow variation within 1%
+        if epoch>=10 and test_loss < best_test_loss*1.01: #allow variation within 1%
+        #Not sure we want this for idec, I dont think we will use test dataset.
             best_test_loss = test_loss
             checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
             print('New best model saved')
             best_fpath = idec_path.replace(idec_path.rsplit('/', 1)[-1],'')+'best_model_IDEC.pkl'
-        if epoch>10 and epoch%10==0:
+            save_ckp(checkpoint, best_fpath)
+        if epoch>=10 and epoch%10==0:
             checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
             save_ckp(checkpoint, idec_path.replace('.pkl','_epoch_{}.pkl'.format(epoch+1)))
 
@@ -214,7 +220,7 @@ if __name__ == "__main__":
         description='train',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-    parser.add_argument('--n_top_proc', type=int, default=-1)
+    parser.add_argument('--n_top_proc', type=int, default=3)
     parser.add_argument('--full_kmeans', type=int, default=0)
     parser.add_argument('--retrain_ae', type=int, default=1)
     parser.add_argument('--load_ae', type=str, default='')
@@ -222,13 +228,13 @@ if __name__ == "__main__":
     parser.add_argument('--lr', type=float, default=0.005)
     parser.add_argument('--n_clusters', default=5, type=int)
     parser.add_argument('--batch_size', default=256, type=int)
-    parser.add_argument('--latent_dim', default=5, type=int)
+    parser.add_argument('--latent_dim', default=20, type=int)
     parser.add_argument('--input_shape', default=[124], type=int)
-    parser.add_argument('--hidden_channels', default=[200,500,200,50,30,10], type=int)  
-    parser.add_argument('--dropout', default=0.05, type=float)  
+    parser.add_argument('--hidden_channels', default=[50,50, 30, 30], type=int)  
+    parser.add_argument('--dropout', default=0.1, type=float)  
     parser.add_argument('--activation', default='leakyrelu_0.5', type=str)  
     parser.add_argument('--n_run', type=int) 
-    parser.add_argument('--gamma',default=100.,type=float,help='coefficient of clustering loss')
+    parser.add_argument('--gamma',default=1.,type=float,help='coefficient of clustering loss')
     parser.add_argument('--update_interval', default=1, type=int)
     parser.add_argument('--tol', default=0.001, type=float)
     parser.add_argument('--n_epochs',default=100, type=int)
@@ -250,7 +256,9 @@ if __name__ == "__main__":
         json.dump(save_params_json, f_json, ensure_ascii=False, indent=4)
 
     DATA_PATH = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/autoencoder_for_anomaly/clustering/inputs/'
-    TRAIN_NAME = 'bkg_l1_filtered_1mln_padded.h5'
+    #TRAIN_NAME = 'bkg_l1_filtered_1mln_padded.h5' full dataset to pretrain AE
+    TRAIN_NAME = 'bkg_sig_0.0156_l1_filtered_padded.h5'
+
     filename_bg = DATA_PATH + TRAIN_NAME 
     in_file = h5py.File(filename_bg, 'r') 
     file_dataset = np.array(in_file['dataset'])
