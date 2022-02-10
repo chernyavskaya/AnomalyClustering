@@ -7,8 +7,9 @@ from torch.nn import Linear
 from torch.autograd import Variable
 
 from torch_geometric.utils import from_scipy_sparse_matrix, to_dense_batch
+import multiprocessing as mp
 
-from numba import njit, prange
+
 
 eps = 1e-12
 PI = math.pi
@@ -30,45 +31,40 @@ def huber_mask(inputs, outputs):
     loss = loss_fnc(inputs,outputs)
     return loss
 
+def chamfer_loss_split_parallel(pool,target, reco, in_pid, out_pid):
+    n_batches = target.shape[0]
 
-@njit(parallel=True,nopython=True)
-def chamfer_loss_split_parallel(target_dense, reco_dense, in_pid_dense, out_pid_dense):
-    #In principle we can even do prediction per PID the same way.. but we can only do this if we manage to speed up the implementation
-    #non zero particles : 
-    n_batches = 0
+    eucl_list = np.array([pool.apply(chamfer_loss_split_per_batch_element, args=(target[i], reco[i], in_pid[i], out_pid[i])) for i in range(0,n_batches)])
+    #pool.close()  
+    reduce_sum = eucl_list.sum(axis=0)
+    return reduce_sum[0]/n_batches,reduce_sum[1]/n_batches
+
+
+def chamfer_loss_split_per_batch_element(x_ib, y_ib, in_pid_dense, out_pid_dense):
     eucl_non_zero = 0.
     eucl_zero = 0.
-    #256 x 17 x 4 -> numpy , paralilize it 
 
-    n_batches = target_dense.shape[0]
-    for ib in prange(n_batches):
-        x_ib = target_dense[ib]
-        y_ib = reco_dense[ib]
-        #construct masks here based on pid 
-        input_non_zeros_mask = np.not_equal(in_pid_dense[ib],0)
-        output_non_zeros_mask = np.not_equal(out_pid_dense[ib],0)
-        x_non_zero = x_ib[input_non_zeros_mask]
-        y_non_zero = y_ib[output_non_zeros_mask]
+    #construct masks here based on pid 
+    input_non_zeros_mask = np.not_equal(in_pid_dense,0)
+    output_non_zeros_mask = np.not_equal(out_pid_dense,0)
+    x_non_zero = x_ib[input_non_zeros_mask]
+    y_non_zero = y_ib[output_non_zeros_mask]
+    if len(y_non_zero)==0 and len(x_non_zero)!=0:
+        eucl_non_zero+=np.sqrt(np.sum(np.sum(x_non_zero**2,axis=-1)))
+    else:
         n_in_part = x_non_zero.shape[0]
         n_out_part = y_non_zero.shape[0]
         diff_non_zero = np.expand_dims(x_non_zero,1) - np.expand_dims(y_non_zero,0)
-        #diff_non_zero = pairwise_distance_per_item_numpy(x_non_zero,y_non_zero)
         dist_non_zero =np.sqrt(np.sum(diff_non_zero**2,axis=-1))
-        #dist_non_zero = np.linalg.norm(diff_non_zero, -1,2)
         #eucl for all particles that are not 0 , normal chamfer 
-        #print(dist_non_zero.shape,np.linalg.norm(diff_non_zero, -1,2))
         min_dist_xy = np.min(dist_non_zero, axis=-1)
         min_dist_yx = np.min(dist_non_zero, axis=-2)
         eucl_non_zero +=  1./2*(np.sum(min_dist_xy)/n_out_part + np.sum(min_dist_yx)/n_in_part)
 
-        y_zero = y_ib[~output_non_zeros_mask]
-        eucl_zero += np.sum(np.linalg.norm(y_zero,axis=-1,ord=2))
+    y_zero = y_ib[~output_non_zeros_mask]
+    eucl_zero += np.sqrt(np.sum(np.sum(y_zero**2,axis=-1)))
+    return [eucl_non_zero, eucl_zero]
 
-        n_batches+=1
-    eucl_non_zero /= n_batches  
-    eucl_zero /= n_batches
-
-    return eucl_non_zero, eucl_zero
 
 def chamfer_loss_split(target, reco, in_pid, out_pid, batch):
     #In principle we can even do prediction per PID the same way.. but we can only do this if we manage to speed up the implementation
@@ -239,7 +235,6 @@ def pairwise_distance_per_item(x, y):
     diff = x1 - y1
     return diff   
 
-@njit(parallel=True)
 def pairwise_distance_per_item_numpy(x, y):
     #implementation of pairwise distance for each item in a batch. Needed when each batch has different length of x and y, e.g. after masking
     distances = np.subtract(x[:,np.newaxis,:],y[np.newaxis,:,:])

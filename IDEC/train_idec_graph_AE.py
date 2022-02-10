@@ -39,6 +39,7 @@ import ADgvae.utils_torch.model_summary as summary
 
 #torch.autograd.set_detect_anomaly(True)
 from torch.utils.tensorboard import SummaryWriter
+import multiprocessing as mp
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
@@ -235,7 +236,7 @@ if __name__ == "__main__":
     parser.add_argument('--latent_dim', default=5, type=int)
     parser.add_argument('--input_shape', default=[16,5], type=int)
     parser.add_argument('--num_pid_classes', default=4, type=int)
-    parser.add_argument('--hidden_channels', default=[8, 12, 16, 20], type=int)   #8, 12, 16, 20, 25, 30, 40, 60,50,40,30
+    parser.add_argument('--hidden_channels', default=[8, 12, 16, 20,30], type=int)   #8, 12, 16, 20, 25, 30, 40, 60,50,40,30
     parser.add_argument('--dropout', default=0.05, type=float)  
     parser.add_argument('--activation', default='leakyrelu_0.5', type=str)  
     parser.add_argument('--n_run', type=int) 
