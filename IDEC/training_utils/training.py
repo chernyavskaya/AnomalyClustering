@@ -177,6 +177,7 @@ def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight
         reco_dense = to_dense_batch(x_bar[:,model.num_pid_classes:], batch_index)[0].detach().cpu().numpy()
         in_pid_dense = to_dense_batch(x[:,0], batch_index)[0].detach().cpu().numpy()
         out_pid_dense = to_dense_batch(x_bar[:,0:model.num_pid_classes].argmax(1), batch_index)[0].detach().cpu().numpy()
+        #WE MIGHT NEED TO ADD A WEIGHT FACTOR TO RECO_ZERO loss, e.g. x 10 ?  Because zero loss is clearly much much smaller than the other reco .
         #reco_loss, reco_zero_loss =  chamfer_loss_split_parallel(pool,target_dense, reco_dense, in_pid_dense, out_pid_dense)
         pids = np.arange(model.num_pid_classes)
         reco_loss, reco_zero_loss =  chamfer_loss_split_pid_parallel(pool,target_dense, reco_dense, in_pid_dense, out_pid_dense,pids)

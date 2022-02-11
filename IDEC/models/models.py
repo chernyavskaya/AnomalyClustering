@@ -179,7 +179,7 @@ class GraphAE(torch.nn.Module):
     x_met_energy = F.relu(x_met[:,0:1]) #energy
     x_met_phi = x_met[:,1:]
     x_met_phi = cycle_by_2pi(x_met_phi)
-    x_met_phi = PI*torch.tanh(x_met_phi) #phi
+    #x_met_phi = PI*torch.tanh(x_met_phi) #phi
     x_met = torch.cat([x_met_energy,x_met_phi], dim=-1) 
 
     x = encoded_x[:,self.hidden_global:]

@@ -59,8 +59,12 @@ def chamfer_loss_split_per_batch_element(x_ib, y_ib, in_pid_dense, out_pid_dense
     output_non_zeros_mask = np.not_equal(out_pid_dense,0)
     x_non_zero = x_ib[input_non_zeros_mask]
     y_non_zero = y_ib[output_non_zeros_mask]
-    if len(y_non_zero)==0 and len(x_non_zero)!=0:
-        eucl_non_zero+=np.sqrt(np.sum(np.sum(x_non_zero**2,axis=-1)))
+    n_in_part = max(1,x_non_zero.shape[0]) # to avoid dividing by 0
+    n_out_part = max(1,y_non_zero.shape[0]) 
+    if len(y_non_zero)==0 :
+        eucl_non_zero+=np.sum(np.sqrt(np.sum(x_non_zero**2,axis=-1)))/n_in_part
+    elif len(x_non_zero)==0 :
+        eucl_non_zero+=np.sum(np.sqrt(np.sum(y_non_zero**2,axis=-1)))/n_out_part
     else:
         n_in_part = x_non_zero.shape[0]
         n_out_part = y_non_zero.shape[0]
@@ -72,7 +76,8 @@ def chamfer_loss_split_per_batch_element(x_ib, y_ib, in_pid_dense, out_pid_dense
         eucl_non_zero +=  1./2*(np.sum(min_dist_xy)/n_out_part + np.sum(min_dist_yx)/n_in_part)
 
     y_zero = y_ib[~output_non_zeros_mask]
-    eucl_zero += np.sqrt(np.sum(np.sum(y_zero**2,axis=-1)))
+    n_out_part = max(1,y_zero.shape[0])
+    eucl_zero += np.sum(np.sqrt(np.sum(y_zero**2,axis=-1)))/n_out_part
     return [eucl_non_zero, eucl_zero]
 
 
@@ -89,13 +94,14 @@ def chamfer_loss_split_pid_per_batch_element(x_ib, y_ib, in_pid_dense, out_pid_d
         output_pid_mask = np.equal(out_pid_dense,pid)
         x_masked = x_ib[input_pid_mask]
         y_masked = y_ib[output_pid_mask]
+        n_in_part = max(1,x_masked.shape[0]) # to avoid dividing by 0
+        n_out_part = max(1,y_masked.shape[0]) 
+        #Devision per particle is needed because we have different occurence and multiplicity for different pid
         if len(y_masked)==0 :
-            eucl_losses[pid]+=np.sqrt(np.sum(np.sum(x_masked**2,axis=-1)))
+            eucl_losses[pid]+=np.sum(np.sqrt(np.sum(x_masked**2,axis=-1)))/n_in_part
         elif len(x_masked)==0 :
-            eucl_losses[pid]+=np.sqrt(np.sum(np.sum(y_masked**2,axis=-1)))
+            eucl_losses[pid]+=np.sum(np.sqrt(np.sum(y_masked**2,axis=-1)))/n_out_part
         else:
-            n_in_part = x_masked.shape[0]
-            n_out_part = y_masked.shape[0]
             diff = np.expand_dims(x_masked,1) - np.expand_dims(x_masked,0)
             dist =np.sqrt(np.sum(diff**2,axis=-1))
             #eucl for all particles that are not 0 , normal chamfer 
@@ -106,7 +112,9 @@ def chamfer_loss_split_pid_per_batch_element(x_ib, y_ib, in_pid_dense, out_pid_d
     #handle zeros :
     output_zeros_mask = np.equal(out_pid_dense,0)
     y_zero = y_ib[output_zeros_mask]
-    eucl_losses[0] += np.sqrt(np.sum(np.sum(y_zero**2,axis=-1)))
+    #n_out_part = max(1,y_zero.shape[0])
+    #Zeros :  do we want to divide here by n_out_part. Maybe not. 
+    eucl_losses[0] += 10*np.sum(np.sqrt(np.sum(y_zero**2,axis=-1))) #/n_out_part
     return eucl_losses
 
 
