@@ -230,7 +230,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', default=256, type=int)
     parser.add_argument('--latent_dim', default=20, type=int)
     parser.add_argument('--input_shape', default=[124], type=int)
-    parser.add_argument('--hidden_channels', default=[50,50, 30, 30], type=int)  
+    parser.add_argument('--hidden_channels', default=[50, 40, 30, 20], type=int)  
     parser.add_argument('--dropout', default=0.1, type=float)  
     parser.add_argument('--activation', default='leakyrelu_0.5', type=str)  
     parser.add_argument('--n_run', type=int) 

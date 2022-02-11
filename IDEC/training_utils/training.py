@@ -18,7 +18,7 @@ from torch_geometric.data import Data, Batch, DataLoader
 from torch_geometric.utils import to_dense_batch
 
 from training_utils.metrics import cluster_acc
-from training_utils.losses import chamfer_loss,huber_mask,categorical_loss,huber_loss,global_met_loss,chamfer_loss_split, chamfer_loss_split_parallel
+from training_utils.losses import chamfer_loss,huber_mask,categorical_loss,huber_loss,global_met_loss,chamfer_loss_split, chamfer_loss_split_parallel, chamfer_loss_split_pid_parallel
 from training_utils.plot_losses import loss_curves
 from tensorboard.backend.event_processing import event_accumulator
 import multiprocessing as mp
@@ -177,7 +177,9 @@ def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight
         reco_dense = to_dense_batch(x_bar[:,model.num_pid_classes:], batch_index)[0].detach().cpu().numpy()
         in_pid_dense = to_dense_batch(x[:,0], batch_index)[0].detach().cpu().numpy()
         out_pid_dense = to_dense_batch(x_bar[:,0:model.num_pid_classes].argmax(1), batch_index)[0].detach().cpu().numpy()
-        reco_loss, reco_zero_loss =  chamfer_loss_split_parallel(pool,target_dense, reco_dense, in_pid_dense, out_pid_dense)
+        #reco_loss, reco_zero_loss =  chamfer_loss_split_parallel(pool,target_dense, reco_dense, in_pid_dense, out_pid_dense)
+        pids = np.arange(model.num_pid_classes)
+        reco_loss, reco_zero_loss =  chamfer_loss_split_pid_parallel(pool,target_dense, reco_dense, in_pid_dense, out_pid_dense,pids)
         #reco_loss, reco_zero_loss  = torch.tensor(reco_loss).to(device), torch.tensor(reco_zero_loss).to(device) 
         #reco_loss, reco_zero_loss =  chamfer_loss_split(x[:,1:],x_bar[:,model.num_pid_classes:],x[:,0],x_bar[:,0:model.num_pid_classes],batch_index)
 

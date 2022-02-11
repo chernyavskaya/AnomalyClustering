@@ -40,6 +40,16 @@ def chamfer_loss_split_parallel(pool,target, reco, in_pid, out_pid):
     return reduce_sum[0]/n_batches,reduce_sum[1]/n_batches
 
 
+def chamfer_loss_split_pid_parallel(pool,target, reco, in_pid, out_pid,pids):
+    n_batches = target.shape[0]
+
+    eucl_list = np.array([pool.apply(chamfer_loss_split_pid_per_batch_element, args=(target[i], reco[i], in_pid[i], out_pid[i],pids)) for i in range(0,n_batches)])
+    #pool.close()  
+    reduce_sum = eucl_list.sum(axis=0)/n_batches
+    #return total loss for non 0 particles (summed over all pid), and 0.
+    return np.sum(reduce_sum[1:]),reduce_sum[0]
+
+
 def chamfer_loss_split_per_batch_element(x_ib, y_ib, in_pid_dense, out_pid_dense):
     eucl_non_zero = 0.
     eucl_zero = 0.
@@ -64,6 +74,40 @@ def chamfer_loss_split_per_batch_element(x_ib, y_ib, in_pid_dense, out_pid_dense
     y_zero = y_ib[~output_non_zeros_mask]
     eucl_zero += np.sqrt(np.sum(np.sum(y_zero**2,axis=-1)))
     return [eucl_non_zero, eucl_zero]
+
+
+
+def chamfer_loss_split_pid_per_batch_element(x_ib, y_ib, in_pid_dense, out_pid_dense,pids):
+    eucl_non_zero = 0.
+    eucl_zero = 0.
+    #pids 
+    eucl_losses = np.zeros(len(pids))
+    #loop with real particles (pid != 0)
+    for pid in pids[1:]:
+        #construct masks here based on pid 
+        input_pid_mask = np.equal(in_pid_dense,pid)
+        output_pid_mask = np.equal(out_pid_dense,pid)
+        x_masked = x_ib[input_pid_mask]
+        y_masked = y_ib[output_pid_mask]
+        if len(y_masked)==0 :
+            eucl_losses[pid]+=np.sqrt(np.sum(np.sum(x_masked**2,axis=-1)))
+        elif len(x_masked)==0 :
+            eucl_losses[pid]+=np.sqrt(np.sum(np.sum(y_masked**2,axis=-1)))
+        else:
+            n_in_part = x_masked.shape[0]
+            n_out_part = y_masked.shape[0]
+            diff = np.expand_dims(x_masked,1) - np.expand_dims(x_masked,0)
+            dist =np.sqrt(np.sum(diff**2,axis=-1))
+            #eucl for all particles that are not 0 , normal chamfer 
+            min_dist_xy = np.min(dist, axis=-1)
+            min_dist_yx = np.min(dist, axis=-2)
+            eucl_losses[pid] +=  1./2*(np.sum(min_dist_xy)/n_out_part + np.sum(min_dist_yx)/n_in_part)
+
+    #handle zeros :
+    output_zeros_mask = np.equal(out_pid_dense,0)
+    y_zero = y_ib[output_zeros_mask]
+    eucl_losses[0] += np.sqrt(np.sum(np.sum(y_zero**2,axis=-1)))
+    return eucl_losses
 
 
 def chamfer_loss_split(target, reco, in_pid, out_pid, batch):
