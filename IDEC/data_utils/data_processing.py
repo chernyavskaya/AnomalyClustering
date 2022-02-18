@@ -89,24 +89,50 @@ def make_adjacencies(particles):
     return adjacencies
 
 def proprocess_e_pt(file_dataset, idx=[2,3], scale=1.e5,log=True):
-    file_dataset[:,:,idx] = file_dataset[:,:,idx]/scale 
-    #log of energy and pt as preprocessing
-    if log==True:
-        file_dataset[:,:,idx] = 3*np.log(file_dataset[:,:,idx]+1)
+    if len(file_dataset.shape)==3:
+        file_dataset[:,:,idx] = file_dataset[:,:,idx]/scale 
+        #log of energy and pt as preprocessing
+        if log==True:
+            file_dataset[:,:,idx] = 3*np.log(file_dataset[:,:,idx]+1)
+    elif len(file_dataset.shape)==2:
+        file_dataset[:,idx] = file_dataset[:,idx]/scale 
+        #log of energy and pt as preprocessing
+        if log==True:
+            file_dataset[:,idx] = 3*np.log(file_dataset[:,idx]+1)
     return file_dataset
 
-def select_top_n_procs(file_dataset,n_proc):
+def select_top_n_procs(file_dataset_proc,n_proc):
     #Select top N processes only :
-    (unique, counts) = np.unique(file_dataset[:,0,0], return_counts=True)
+    (unique, counts) = np.unique(file_dataset_proc, return_counts=True)
     procs_sorted, counts_sorted = zip(*sorted(zip(unique, counts), key=lambda x: x[1],reverse=True))
-    top_proc_mask = np.isin(file_dataset[:,0,0], procs_sorted[:n_proc])
+    top_proc_mask = np.isin(file_dataset_proc, procs_sorted[:n_proc])
     return top_proc_mask
+
+def prepare_1d_reduced_datasets(file_dataset,n_top_proc = -1):
+    print('Preparing dataset, check that the feature indexing corresponds to your dataset!')
+
+    if n_top_proc > 0:
+        top_proc_mask =  select_top_n_procs(file_dataset[:,0],n_top_proc)
+        file_dataset = file_dataset[top_proc_mask]
+
+    proc_idx = 0
+
+    dataset_proc_truth = file_dataset[:,[proc_idx]]
+    dataset_particles = file_dataset[:,1:]
+    dataset_particles = proprocess_e_pt(dataset_particles,idx=[0,2,6],scale=1e5,log=True) #[MET, N(e/ɣ/μ), max pT(e/ɣ/μ), η(e/ɣ/μ), ɸ(e/ɣ/μ), N(jets), max pT(jets), η(jets), ɸ(jets) ]]
+    dataset_met = np.zeros((dataset_particles.shape[0],4))
+    dataset_met[:,1] = np.copy(dataset_particles[:,0])
+    dataset_particles = dataset_particles[:,1:]
+    dataset_1d = np.hstack([dataset_met,dataset_particles])    
+    dense_dataset = DenseEventDataset(dataset_1d,dataset_proc_truth)
+    return dataset_1d,dataset_proc_truth,dense_dataset
+
 
 def prepare_1d_datasets(file_dataset,n_top_proc = -1):
     print('Preparing dataset, check that the feature indexing corresponds to your dataset!')
 
     if n_top_proc > 0:
-        top_proc_mask =  select_top_n_procs(file_dataset,n_top_proc)
+        top_proc_mask =  select_top_n_procs(file_dataset[:,0,0],n_top_proc)
         file_dataset = file_dataset[top_proc_mask]
 
     proc_idx = 0
@@ -138,7 +164,7 @@ def prepare_graph_datas(file_dataset,n_particles,n_top_proc = -1,connect_only_re
     file_dataset = proprocess_e_pt(file_dataset,idx=[2,3],scale=1e5,log=True)
 
     if n_top_proc > 0:
-        top_proc_mask =  select_top_n_procs(file_dataset,n_top_proc)
+        top_proc_mask =  select_top_n_procs(file_dataset[:,0,0],n_top_proc)
         file_dataset = file_dataset[top_proc_mask]
     file_dataset = file_dataset[:,:n_particles+1,:]
 

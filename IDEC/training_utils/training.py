@@ -13,15 +13,17 @@ import torch
 from torch.optim import Adam
 import torch.nn.functional as F
 from torch.utils.data import DataLoader as DataLoaderTorch
+from torch.autograd import Variable
 
 from torch_geometric.data import Data, Batch, DataLoader
 from torch_geometric.utils import to_dense_batch
 
 from training_utils.metrics import cluster_acc
-from training_utils.losses import chamfer_loss,huber_mask,categorical_loss,huber_loss,global_met_loss,chamfer_loss_split, chamfer_loss_split_parallel, chamfer_loss_split_pid_parallel
+from training_utils.losses import chamfer_loss,huber_mask,categorical_loss,huber_loss,global_met_loss,chamfer_loss_split, chamfer_loss_split_parallel, chamfer_loss_split_parallel_tensor,chamfer_loss_split_pid_parallel
 from training_utils.plot_losses import loss_curves
 from tensorboard.backend.event_processing import event_accumulator
 import multiprocessing as mp
+import torch.multiprocessing as torch_mp
 
 
 def merge_loss_dicts(dict_list):
@@ -128,8 +130,8 @@ def create_ckp(epoch, train_loss,test_loss,model_state_dict,optimizer_state_dict
 
 
 def target_distribution(q):
-    weight = q**2 / q.sum(0)
-    return (weight.t() / weight.sum(1)).t()
+    weight = q**2 / q.sum(dim=0)
+    return Variable((weight.t() / weight.sum(dim=1)).t(), requires_grad=True)
 
 
 def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight,mode='test'):
@@ -140,7 +142,8 @@ def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight
 
     total_loss, total_reco_loss, total_pid_loss, total_energy_loss, total_met_loss, total_reco_zero_loss = 0.,0.,0.,0.,0.,0.
     t = tqdm.tqdm(enumerate(loader),total=len(loader))
-    pool = mp.Pool(mp.cpu_count())
+    #pool = mp.Pool(mp.cpu_count())
+    pool = torch_mp.Pool(mp.cpu_count())
     for i, data in t:
         data = data.to(device)
         x = data.x.to(device)
@@ -173,16 +176,24 @@ def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight
         pid_loss = categorical_loss(x[:,0],x_bar[:,0:model.num_pid_classes],xy_idx, yx_idx,nll_loss) #target, reco
 
 
-        target_dense = to_dense_batch(x[:,1:], batch_index)[0].detach().cpu().numpy()
-        reco_dense = to_dense_batch(x_bar[:,model.num_pid_classes:], batch_index)[0].detach().cpu().numpy()
-        in_pid_dense = to_dense_batch(x[:,0], batch_index)[0].detach().cpu().numpy()
-        out_pid_dense = to_dense_batch(x_bar[:,0:model.num_pid_classes].argmax(1), batch_index)[0].detach().cpu().numpy()
+        #target_dense = to_dense_batch(x[:,1:], batch_index)[0].clone().detach().cpu().numpy()
+        #reco_dense = to_dense_batch(x_bar[:,model.num_pid_classes:], batch_index)[0].detach().cpu().numpy()
+        #in_pid_dense = to_dense_batch(x[:,0], batch_index)[0].clone().detach().cpu().numpy()
+        #out_pid_dense = to_dense_batch(x_bar[:,0:model.num_pid_classes].argmax(1), batch_index)[0].clone().detach().cpu().numpy()
         #WE MIGHT NEED TO ADD A WEIGHT FACTOR TO RECO_ZERO loss, e.g. x 10 ?  Because zero loss is clearly much much smaller than the other reco .
         #reco_loss, reco_zero_loss =  chamfer_loss_split_parallel(pool,target_dense, reco_dense, in_pid_dense, out_pid_dense)
-        pids = np.arange(model.num_pid_classes)
-        reco_loss, reco_zero_loss =  chamfer_loss_split_pid_parallel(pool,target_dense, reco_dense, in_pid_dense, out_pid_dense,pids)
-        #reco_loss, reco_zero_loss  = torch.tensor(reco_loss).to(device), torch.tensor(reco_zero_loss).to(device) 
-        #reco_loss, reco_zero_loss =  chamfer_loss_split(x[:,1:],x_bar[:,model.num_pid_classes:],x[:,0],x_bar[:,0:model.num_pid_classes],batch_index)
+
+        #target_dense = to_dense_batch(x[:,1:], batch_index)[0].cpu().share_memory_()
+        #reco_dense = to_dense_batch(x_bar[:,model.num_pid_classes:], batch_index)[0].cpu().share_memory_()
+        #in_pid_dense = to_dense_batch(x[:,0], batch_index)[0].cpu().share_memory_()
+        #out_pid_dense = to_dense_batch(x_bar[:,0:model.num_pid_classes].argmax(1), batch_index)[0].cpu().share_memory_()
+        #reco_loss, reco_zero_loss =  chamfer_loss_split_parallel_tensor(pool,target_dense, reco_dense, in_pid_dense, out_pid_dense)
+
+
+        #pids = np.arange(model.num_pid_classes)
+        #reco_loss, reco_zero_loss =  chamfer_loss_split_pid_parallel(pool,target_dense, reco_dense, in_pid_dense, out_pid_dense,pids)
+        
+        reco_loss, reco_zero_loss =  chamfer_loss_split(x[:,1:],x_bar[:,model.num_pid_classes:],x[:,0],x_bar[:,0:model.num_pid_classes],batch_index)
 
 
 
@@ -200,7 +211,7 @@ def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight
             loss.backward()
             optimizer.step()
 
-    pool.close()
+    #pool.close()
     i = len(loader)
     return total_loss / (i + 1) , total_reco_loss / (i + 1), total_pid_loss/(i+1), total_energy_loss/(i+1),total_met_loss/(i+1), total_reco_zero_loss / (i + 1)
 
@@ -222,6 +233,8 @@ def train_test_idec_graph(model,loader,p_all,optimizer,device,gamma,pid_weight,p
         if mode=='train':
             optimizer.zero_grad()
         x_bar,x_met_bar, q, _ = model(data)
+        p_a = target_distribution(q)
+
         #x_embedded = model.embedded_input
         #loss = F.mse_loss(x_bar, x) 
         #loss, xy_idx, yx_idx = chamfer_loss(x_embedded,x_bar,batch_index)
@@ -247,10 +260,11 @@ def train_test_idec_graph(model,loader,p_all,optimizer,device,gamma,pid_weight,p
         #reco_loss, reco_zero_loss  = torch.tensor(reco_loss).to(device), torch.tensor(reco_zero_loss).to(device) 
         reco_loss, reco_zero_loss =  chamfer_loss_split(x[:,1:],x_bar[:,model.ae.num_pid_classes:],x[:,0],x_bar[:,0:model.ae.num_pid_classes],batch_index)
 
-        kl_loss = F.kl_div(q.log(), p_all[i],reduction='batchmean')
+        #kl_loss = F.kl_div(q.log(), p_all[i].log(),log_target=True,reduction='batchmean')
+        kl_loss = F.kl_div(q.log(), p_a.log(),log_target=True,reduction='batchmean')
+
         loss = gamma * kl_loss + (1.-gamma)*(reco_loss + reco_zero_loss+ pid_loss_weight*pid_loss + met_loss_weight*met_loss) #+ energy_loss_weight*energy_loss 
 
-        loss = reco_loss  + pid_loss_weight*pid_loss + met_loss_weight*met_loss #+ energy_loss_weight*energy_loss
         total_loss += loss.item()
         total_kl_loss += kl_loss.item()
         total_reco_loss += reco_loss.item()
@@ -278,7 +292,8 @@ def pretrain_ae_graph(model,train_loader,test_loader,optimizer,start_epoch,n_epo
 
         print("epoch {} : TRAIN : total loss={:.4f}, reco loss={:.4f}, pid loss={:.4f}, energy loss={:.4f}, met loss={:.4f}, reco zero loss={:.4f}  ".format(epoch, train_loss , train_reco_loss, train_pid_loss, train_energy_loss, train_met_loss,train_reco_zero_loss))
         print("epoch {} : TEST : total loss={:.4f}, reco loss={:.4f}, pid loss={:.4f}, energy loss={:.4f}, met loss={:.4f}, reco zero loss={:.4f}  ".format(epoch,test_loss , test_reco_loss, test_pid_loss, test_energy_loss, test_met_loss,test_reco_zero_loss ))
-        scheduler.step(test_loss)
+        #Here scheduler is used with train loss only because we have 70k events to train and 7 to test (too little)
+        scheduler.step(train_loss)
 
         loss_names = ["Loss Tot","Loss Reco","Loss Pid","Loss Energy","Loss Met","Loss Reco Zero"]
         for name, loss in zip(loss_names,[train_loss , train_reco_loss, train_pid_loss, train_energy_loss, train_met_loss,train_reco_zero_loss]):
@@ -335,7 +350,6 @@ def train_test_ae_dense(model,loader,optimizer,device,mode='test'):
     i = len(loader)
     return total_loss / (i + 1)
 
-
 def train_test_idec_dense(model,loader,p_all,optimizer,device,gamma,mode='test'):
     if mode=='test':
         model.eval()
@@ -343,6 +357,11 @@ def train_test_idec_dense(model,loader,p_all,optimizer,device,gamma,mode='test')
         model.train()
 
     total_loss,total_reco_loss,total_kl_loss  = 0.,0.,0.
+    #for i,(x,_) in enumerate(full_loader_with_one_batch):
+    #    x = x.to(device)
+    #    _,_, q ,_ = model(x)
+    #    p_a_full = target_distribution(q)
+
     t = tqdm.tqdm(enumerate(loader),total=len(loader))
     for i, (x,_) in t:
 
@@ -351,9 +370,14 @@ def train_test_idec_dense(model,loader,p_all,optimizer,device,gamma,mode='test')
         if mode=='train':
             optimizer.zero_grad()
         x_bar,_, q ,_ = model(x)
+        p_a = target_distribution(q)
+
 
         reco_loss = huber_mask(x,x_bar)
-        kl_loss = F.kl_div(q.log(), p_all[i],reduction='batchmean')
+        #kl_loss = F.kl_div(q.log(), p_all[i].log(),log_target=True,reduction='batchmean') #does not work
+        #kl_loss = F.kl_div(q.log(), p_a_full[i*256:(i+1)*256].log(),log_target=True,reduction='batchmean') #works but requires loading everything into memmory
+        kl_loss = F.kl_div(q.log(), p_a.log(),log_target=True,reduction='batchmean') #works but not what I need
+
         loss = gamma * kl_loss + (1.-gamma)*reco_loss 
 
         total_loss += loss.item()
@@ -382,7 +406,7 @@ def pretrain_ae_dense(model,train_loader,test_loader,optimizer,start_epoch,n_epo
         print("epoch {} : TRAIN : total loss={:.4f}".format(epoch, train_loss ))
         print("epoch {} : TEST : total loss={:.4f}".format(epoch, test_loss ))
 
-        scheduler.step(test_loss)
+        scheduler.step(train_loss)
 
         summary_writer.add_scalar("Training Loss Tot", train_loss, epoch)
         summary_writer.add_scalar("Validation Loss Tot", test_loss, epoch)

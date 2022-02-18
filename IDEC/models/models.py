@@ -178,7 +178,7 @@ class GraphAE(torch.nn.Module):
     x_met = self.dec_met_fc1(x_met)
     x_met_energy = F.relu(x_met[:,0:1]) #energy
     x_met_phi = x_met[:,1:]
-    x_met_phi = cycle_by_2pi(x_met_phi)
+    x_met_phi = cycle_by_2pi(x_met_phi) #somehow removing cycling and/or adding tanh lead to met loss being very high at start..
     #x_met_phi = PI*torch.tanh(x_met_phi) #phi
     x_met = torch.cat([x_met_energy,x_met_phi], dim=-1) 
 
@@ -206,7 +206,7 @@ class GraphAE(torch.nn.Module):
     x_phi =  x[:,[self.num_pid_classes-1+self.phi_idx]]
     x_energy_pt = x[:,[self.num_pid_classes-1+self.energy_idx,self.num_pid_classes-1+self.pt_idx]]
     x_phi = cycle_by_2pi(x_phi)
-    x_phi = PI*torch.tanh(x_phi)
+    #x_phi = PI*torch.tanh(x_phi)
     x_eta = 2.8*torch.tanh(x_eta) # have a symmetric activation function that eventually dies out. 
 
 #########
@@ -236,13 +236,19 @@ class DenseAE(torch.nn.Module):
 
     self.activation = activation 
     #self.batchnorm = nn.BatchNorm1d(input_shape[-1])
-    self.input_shape = input_shape[0]
+    self.input_shape = input_shape
     self.num_feats = 4
 
-
-    self.order_num_objets = [1,3,3,3,15,6]
-    self.order_names_objects = 'met,e,g,mu,j,b'.split(',')
-    self.feats = 'E,pt,eta,phi'.split(',')
+    #full dataset
+    if self.input_shape==124:
+        self.order_num_objets = [1,3,3,3,15,6]
+        self.order_names_objects = 'met,e,g,mu,j,b'.split(',')
+        self.feats = 'E,pt,eta,phi'.split(',')
+    #reduced dataset
+    elif self.input_shape==12:
+        self.order_num_objets = [1,1,1]
+        self.order_names_objects = 'met,egmu,j'.split(',')
+        self.feats = 'N,pt,eta,phi'.split(',')
 
     self.access_idx = [0] 
     for n_obj in self.order_num_objets:
@@ -296,14 +302,15 @@ class DenseAE(torch.nn.Module):
     i_eta = self.feats.index('eta')
     i_phi = self.feats.index('phi')
     i_pt = self.feats.index('pt')
-    i_energy = self.feats.index('E')
+    i_energy = self.feats.index('E') if 'E' in self.feats else i_pt
+    i_N = self.feats.index('N') if 'N' in self.feats else i_pt
     i_feat = i_eta
     for i_obj,num_obj in enumerate(self.order_num_objets):
         x_bar[:,self.access_idx[i_obj]+i_feat:self.access_idx[i_obj]+num_obj*self.num_feats:self.num_feats] = 4.*torch.tanh(dec[:,self.access_idx[i_obj]+i_feat:self.access_idx[i_obj]+num_obj*self.num_feats:self.num_feats])
     i_feat = i_phi
     for i_obj,num_obj in enumerate(self.order_num_objets):
         x_bar[:,self.access_idx[i_obj]+i_feat:self.access_idx[i_obj]+num_obj*self.num_feats:self.num_feats] = PI*torch.tanh(dec[:,self.access_idx[i_obj]+i_feat:self.access_idx[i_obj]+num_obj*self.num_feats:self.num_feats])
-    for i_feat in [i_energy, i_pt]:
+    for i_feat in [i_energy, i_pt, i_N]:
         for i_obj,num_obj in enumerate(self.order_num_objets):
             x_bar[:,self.access_idx[i_obj]+i_feat:self.access_idx[i_obj]+num_obj*self.num_feats:self.num_feats] = F.relu(dec[:,self.access_idx[i_obj]+i_feat:self.access_idx[i_obj]+num_obj*self.num_feats:self.num_feats])
     

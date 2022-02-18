@@ -35,7 +35,6 @@ def chamfer_loss_split_parallel(pool,target, reco, in_pid, out_pid):
     n_batches = target.shape[0]
 
     eucl_list = np.array([pool.apply(chamfer_loss_split_per_batch_element, args=(target[i], reco[i], in_pid[i], out_pid[i])) for i in range(0,n_batches)])
-    #pool.close()  
     reduce_sum = eucl_list.sum(axis=0)
     return reduce_sum[0]/n_batches,reduce_sum[1]/n_batches
 
@@ -98,9 +97,9 @@ def chamfer_loss_split_pid_per_batch_element(x_ib, y_ib, in_pid_dense, out_pid_d
         n_out_part = max(1,y_masked.shape[0]) 
         #Devision per particle is needed because we have different occurence and multiplicity for different pid
         if len(y_masked)==0 :
-            eucl_losses[pid]+=np.sum(np.sqrt(np.sum(x_masked**2,axis=-1)))/n_in_part
+            eucl_losses[pid]+=np.sum(np.sqrt(np.sum(x_masked**2,axis=-1)))#/n_in_part
         elif len(x_masked)==0 :
-            eucl_losses[pid]+=np.sum(np.sqrt(np.sum(y_masked**2,axis=-1)))/n_out_part
+            eucl_losses[pid]+=np.sum(np.sqrt(np.sum(y_masked**2,axis=-1)))#/n_out_part
         else:
             diff = np.expand_dims(x_masked,1) - np.expand_dims(x_masked,0)
             dist =np.sqrt(np.sum(diff**2,axis=-1))
@@ -114,8 +113,45 @@ def chamfer_loss_split_pid_per_batch_element(x_ib, y_ib, in_pid_dense, out_pid_d
     y_zero = y_ib[output_zeros_mask]
     #n_out_part = max(1,y_zero.shape[0])
     #Zeros :  do we want to divide here by n_out_part. Maybe not. 
-    eucl_losses[0] += 10*np.sum(np.sqrt(np.sum(y_zero**2,axis=-1))) #/n_out_part
+    eucl_losses[0] += np.sum(np.sqrt(np.sum(y_zero**2,axis=-1)))#/n_out_part
     return eucl_losses
+
+
+
+def chamfer_loss_split_parallel_tensor(pool,target, reco, in_pid, out_pid):
+    n_batches = target.shape[0]
+
+    eucl_list = [pool.apply(chamfer_loss_split_per_batch_tensor, args=(target[i], reco[i], in_pid[i], out_pid[i])) for i in range(0,n_batches)]
+    reduce_sum = torch.sum(eucl_list,dim=0)
+    return reduce_sum[0]/n_batches,reduce_sum[1]/n_batches
+
+def chamfer_loss_split_per_batch_tensor(x_ib, y_ib, in_pid, out_pid):
+    eucl_non_zero = 0.
+    eucl_zero = 0.
+
+    #construct masks here based on pid 
+    input_non_zeros_mask = torch.ne(in_pid,0).to(x_ib.device)
+    output_non_zeros_mask = torch.ne(out_pid.argmax(1),0).to(x_ib.device)
+    x_non_zero = x_ib[input_non_zeros_mask]
+    y_non_zero = y_ib[output_non_zeros_mask]
+    n_in_part = max(1,x_non_zero.shape[0]) # to avoid dividing by 0
+    n_out_part = max(1,y_non_zero.shape[0]) 
+    if len(y_non_zero)==0 :
+        eucl_non_zero+=torch.sum(torch.norm(x_non_zero,dim=-1,p=2))/n_in_part
+    elif len(x_non_zero)==0 :
+        eucl_non_zero+=torch.sum(torch.norm(x_non_zero,dim=-1,p=2))/n_out_part
+    else:
+        diff_non_zero = pairwise_distance_per_item(x_non_zero,y_non_zero).to(x_ib.device)
+        dist_non_zero = torch.norm(diff_non_zero, dim=-1,p=2).to(x_ib.device)
+        #eucl for all particles that are not 0 , normal chamfer 
+        min_dist_xy = torch.min(dist_non_zero, dim = -1)
+        min_dist_yx = torch.min(dist_non_zero, dim = -2)
+        eucl_non_zero +=  1./2*(torch.sum(min_dist_xy.values)/n_out_part + torch.sum(min_dist_yx.values)/n_in_part)
+
+    y_zero = y_ib[~output_non_zeros_mask].to(x_ib.device)
+    eucl_zero += torch.sum(torch.norm(y_zero,dim=-1,p=2))/n_out_part
+
+    return  eucl_non_zero,eucl_zero
 
 
 def chamfer_loss_split(target, reco, in_pid, out_pid, batch):
@@ -134,11 +170,14 @@ def chamfer_loss_split(target, reco, in_pid, out_pid, batch):
         x_non_zero = x_ib[input_non_zeros_mask].to(target.device)
         y_non_zero = y_ib[output_non_zeros_mask].to(target.device)
         #add a check that checks if y is not empty. if y is empty then loss should be sum of x_non_zero : torch.sum(torch.norm(x_non_zero,dim=-1,p=2))
-        if len(y_non_zero)==0 and len(x_non_zero)!=0:
-            eucl_non_zero+=torch.sum(torch.norm(x_non_zero,dim=-1,p=2))
+
+        n_in_part = max(1,x_non_zero.shape[0]) # to avoid dividing by 0
+        n_out_part = max(1,y_non_zero.shape[0]) 
+        if len(y_non_zero)==0 :
+            eucl_non_zero+=torch.sum(torch.norm(x_non_zero,dim=-1,p=2))/n_in_part
+        elif len(x_non_zero)==0 :
+            eucl_non_zero+=torch.sum(torch.norm(x_non_zero,dim=-1,p=2))/n_out_part
         else:
-            n_in_part = x_non_zero.shape[0]
-            n_out_part = y_non_zero.shape[0]
             diff_non_zero = pairwise_distance_per_item(x_non_zero,y_non_zero).to(target.device)
             dist_non_zero = torch.norm(diff_non_zero, dim=-1,p=2).to(target.device)
             #eucl for all particles that are not 0 , normal chamfer 
@@ -147,7 +186,7 @@ def chamfer_loss_split(target, reco, in_pid, out_pid, batch):
             eucl_non_zero +=  1./2*(torch.sum(min_dist_xy.values)/n_out_part + torch.sum(min_dist_yx.values)/n_in_part)
 
         y_zero = y_ib[~output_non_zeros_mask].to(target.device)
-        eucl_zero += torch.sum(torch.norm(y_zero,dim=-1,p=2))
+        eucl_zero += torch.sum(torch.norm(y_zero,dim=-1,p=2))/n_out_part
 
         n_batches+=1
     eucl_non_zero /= n_batches  
