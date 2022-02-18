@@ -139,17 +139,17 @@ def train_idec():
         if epoch % args.update_interval == 0:
             #p_all = torch.zeros((len(train_loader),args.batch_size,args.n_clusters),dtype=float,device=device)
             p_all = []
-           # for i, (x,y) in enumerate(train_loader):
-           #     x = x.to(device)
-           #     _,_, tmp_q_i, _ = model(x)
-           #     #p_all[i] = target_distribution(tmp_q_i)
-           #     p_all.append(target_distribution(tmp_q_i))
-
-
-            for i,(x,_) in enumerate(kmeans_loader):
+            for i, (x,y) in enumerate(train_loader):
                 x = x.to(device)
-                _,_, q ,_ = model(x)
-                p_all = target_distribution(q)
+                _,_, tmp_q_i, _ = model(x)
+                #p_all[i] = target_distribution(tmp_q_i)
+                p_all.append(target_distribution(tmp_q_i))
+
+
+            #for i,(x,_) in enumerate(kmeans_loader):
+            #    x = x.to(device)
+            #    _,_, q ,_ = model(x)
+            #    p_all = target_distribution(q)
 
             pred_labels = np.array([model.forward(x.to(device))[2].data.cpu().numpy().argmax(1) for i,(x,_) in enumerate(train_loader)]) #argmax(1) ##index (cluster nubmber) of the cluster with the highest probability q.
             true_labels = np.array([y.cpu().numpy() for i,(_,y) in enumerate(train_loader)])

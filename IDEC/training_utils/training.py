@@ -371,8 +371,8 @@ def train_test_idec_dense(model,loader,p_all,optimizer,device,gamma,mode='test')
 
         #p_all[i].requires_grad=False
         reco_loss = huber_mask(x,x_bar)
-        #kl_loss = F.kl_div(q.log(), Variable(p_all[i].log(),requires_grad=False),log_target=True,reduction='batchmean') #does not work
-        kl_loss = F.kl_div(q.log(), Variable(p_all[i*batch_size:(i+1)*batch_size],requires_grad=False).log(),log_target=True,reduction='batchmean') #works but requires loading everything into memmory
+        kl_loss = F.kl_div(q.log(), Variable(p_all[i],requires_grad=False).log(),log_target=True,reduction='batchmean') #does not work
+        #kl_loss = F.kl_div(q.log(), Variable(p_all[i*batch_size:(i+1)*batch_size],requires_grad=False).log(),log_target=True,reduction='batchmean') #works but requires loading everything into memmory
         #kl_loss = F.kl_div(q.log(), p_a.log(),log_target=True,reduction='batchmean') #works but not what I need
 
         loss = gamma * kl_loss + (1.-gamma)*reco_loss 
