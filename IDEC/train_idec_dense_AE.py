@@ -118,7 +118,7 @@ def train_idec():
     if args.full_kmeans:
         print('Full k-means')
         #Full k-means if dataset can fit in memeory (better cluster initialization and faster convergence of the model)
-        kmeans_loader = DataLoaderTorch(train_dataset, batch_size=len(train_dataset), shuffle=True,drop_last=True) #,num_workers=5
+        kmeans_loader = DataLoaderTorch(train_dataset, batch_size=len(train_dataset), shuffle=False,drop_last=True) #,num_workers=5
         kmeans_initialized = KMeans(n_clusters=args.n_clusters, n_init=20)
     else:
         kmeans_loader = train_loader
@@ -132,18 +132,24 @@ def train_idec():
     pred_labels_last = 0
     delta_label = 1e4
     best_test_loss=10000.
-    model.train()
     for epoch in range(start_epoch,start_epoch+args.n_epochs_idec):
 
         #evaluation part
+        model.eval()
         if epoch % args.update_interval == 0:
-            p_all = torch.zeros((len(train_loader),args.batch_size,args.n_clusters),dtype=float,device=device)
-            for i, (x,y) in enumerate(train_loader):
-                x = x.to(device)
+            #p_all = torch.zeros((len(train_loader),args.batch_size,args.n_clusters),dtype=float,device=device)
+            p_all = []
+           # for i, (x,y) in enumerate(train_loader):
+           #     x = x.to(device)
+           #     _,_, tmp_q_i, _ = model(x)
+           #     #p_all[i] = target_distribution(tmp_q_i)
+           #     p_all.append(target_distribution(tmp_q_i))
 
-                _,_, tmp_q_i, _ = model(x)
-                tmp_q_i = tmp_q_i.data
-                p_all[i] = target_distribution(tmp_q_i)
+
+            for i,(x,_) in enumerate(kmeans_loader):
+                x = x.to(device)
+                _,_, q ,_ = model(x)
+                p_all = target_distribution(q)
 
             pred_labels = np.array([model.forward(x.to(device))[2].data.cpu().numpy().argmax(1) for i,(x,_) in enumerate(train_loader)]) #argmax(1) ##index (cluster nubmber) of the cluster with the highest probability q.
             true_labels = np.array([y.cpu().numpy() for i,(_,y) in enumerate(train_loader)])
@@ -176,6 +182,7 @@ def train_idec():
                 break
 
         #training part
+        model.train()
         train_loss,train_kl_loss,train_reco_loss = train_test_idec_dense(model,train_loader,p_all,optimizer,device,args.gamma,mode='train')
         test_loss,test_kl_loss,test_reco_loss = train_test_idec_dense(model,test_loader,p_all,optimizer,device,args.gamma,mode='test')
 
@@ -258,14 +265,14 @@ if __name__ == "__main__":
 
     DATA_PATH = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/autoencoder_for_anomaly/clustering/inputs/'
     #TRAIN_NAME = 'bkg_l1_filtered_1mln_padded.h5' full dataset to pretrain AE
-    TRAIN_NAME = 'bkg_sig_0.0156_l1_filtered_padded.h5'
-    #TRAIN_NAME = 'bkg_sig_0.0156_l1_filtered_reduced.h5'
+    #TRAIN_NAME = 'bkg_sig_0.0156_l1_filtered_padded.h5'
+    TRAIN_NAME = 'bkg_sig_0.0156_l1_filtered_reduced.h5'
 
     filename_bg = DATA_PATH + TRAIN_NAME 
     in_file = h5py.File(filename_bg, 'r') 
     file_dataset = np.array(in_file['dataset'])
-    file_dataset_1d,_,dataset = data_proc.prepare_1d_datasets(file_dataset,n_top_proc = args.n_top_proc)
-    #file_dataset_1d,_,dataset = data_proc.prepare_1d_reduced_datasets(file_dataset,n_top_proc = args.n_top_proc)
+    #file_dataset_1d,_,dataset = data_proc.prepare_1d_datasets(file_dataset,n_top_proc = args.n_top_proc)
+    file_dataset_1d,_,dataset = data_proc.prepare_1d_reduced_datasets(file_dataset,n_top_proc = args.n_top_proc)
 
     train_test_split = 0.9
     train_len = int(len(dataset)*train_test_split)

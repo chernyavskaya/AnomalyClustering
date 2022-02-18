@@ -131,7 +131,8 @@ def create_ckp(epoch, train_loss,test_loss,model_state_dict,optimizer_state_dict
 
 def target_distribution(q):
     weight = q**2 / q.sum(dim=0)
-    return Variable((weight.t() / weight.sum(dim=1)).t(), requires_grad=True)
+    #return Variable((weight.t() / weight.sum(dim=1)).t(), requires_grad=True)
+    return (weight.t() / weight.sum(dim=1)).t()
 
 
 def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight,mode='test'):
@@ -357,14 +358,10 @@ def train_test_idec_dense(model,loader,p_all,optimizer,device,gamma,mode='test')
         model.train()
 
     total_loss,total_reco_loss,total_kl_loss  = 0.,0.,0.
-    #for i,(x,_) in enumerate(full_loader_with_one_batch):
-    #    x = x.to(device)
-    #    _,_, q ,_ = model(x)
-    #    p_a_full = target_distribution(q)
 
     t = tqdm.tqdm(enumerate(loader),total=len(loader))
     for i, (x,_) in t:
-
+        batch_size = x.shape[0]
         x = x.to(device)
 
         if mode=='train':
@@ -372,11 +369,11 @@ def train_test_idec_dense(model,loader,p_all,optimizer,device,gamma,mode='test')
         x_bar,_, q ,_ = model(x)
         p_a = target_distribution(q)
 
-
+        #p_all[i].requires_grad=False
         reco_loss = huber_mask(x,x_bar)
-        #kl_loss = F.kl_div(q.log(), p_all[i].log(),log_target=True,reduction='batchmean') #does not work
-        #kl_loss = F.kl_div(q.log(), p_a_full[i*256:(i+1)*256].log(),log_target=True,reduction='batchmean') #works but requires loading everything into memmory
-        kl_loss = F.kl_div(q.log(), p_a.log(),log_target=True,reduction='batchmean') #works but not what I need
+        #kl_loss = F.kl_div(q.log(), Variable(p_all[i].log(),requires_grad=False),log_target=True,reduction='batchmean') #does not work
+        kl_loss = F.kl_div(q.log(), Variable(p_all[i*batch_size:(i+1)*batch_size],requires_grad=False).log(),log_target=True,reduction='batchmean') #works but requires loading everything into memmory
+        #kl_loss = F.kl_div(q.log(), p_a.log(),log_target=True,reduction='batchmean') #works but not what I need
 
         loss = gamma * kl_loss + (1.-gamma)*reco_loss 
 
