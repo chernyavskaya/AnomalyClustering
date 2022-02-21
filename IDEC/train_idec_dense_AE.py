@@ -189,7 +189,7 @@ def train_idec():
         print("epoch {} : TRAIN : total loss={:.4f}, kl loss={:.4f}, reco loss={:.4f}".format(epoch, train_loss, train_kl_loss, train_reco_loss  ))
         print("epoch {} : TEST : total loss={:.4f}, kl loss={:.4f}, reco loss={:.4f}".format(epoch, test_loss, test_kl_loss, test_reco_loss ))
 
-        scheduler.step(train_loss)
+        #scheduler.step(train_loss)
 
         loss_names=["Loss Tot","Loss KL","Loss Reco"]
         for name, loss in zip(loss_names,[train_loss,train_kl_loss,train_reco_loss ]):
@@ -265,14 +265,14 @@ if __name__ == "__main__":
 
     DATA_PATH = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/autoencoder_for_anomaly/clustering/inputs/'
     #TRAIN_NAME = 'bkg_l1_filtered_1mln_padded.h5' full dataset to pretrain AE
-    #TRAIN_NAME = 'bkg_sig_0.0156_l1_filtered_padded.h5'
-    TRAIN_NAME = 'bkg_sig_0.0156_l1_filtered_reduced.h5'
+    TRAIN_NAME = 'bkg_sig_0.0156_l1_filtered_padded.h5'
+    #TRAIN_NAME = 'bkg_sig_0.0156_l1_filtered_reduced.h5'
 
     filename_bg = DATA_PATH + TRAIN_NAME 
     in_file = h5py.File(filename_bg, 'r') 
     file_dataset = np.array(in_file['dataset'])
-    #file_dataset_1d,_,dataset = data_proc.prepare_1d_datasets(file_dataset,n_top_proc = args.n_top_proc)
-    file_dataset_1d,_,dataset = data_proc.prepare_1d_reduced_datasets(file_dataset,n_top_proc = args.n_top_proc)
+    file_dataset_1d,_,dataset = data_proc.prepare_1d_datasets(file_dataset,n_top_proc = args.n_top_proc)
+    #file_dataset_1d,_,dataset = data_proc.prepare_1d_reduced_datasets(file_dataset,n_top_proc = args.n_top_proc)
 
     train_test_split = 0.9
     train_len = int(len(dataset)*train_test_split)

@@ -153,6 +153,52 @@ def chamfer_loss_split_per_batch_tensor(x_ib, y_ib, in_pid, out_pid):
 
     return  eucl_non_zero,eucl_zero
 
+class CustomChamferLoss(torch.nn.Module):
+    def __init__(self) :
+        super(CustomChamferLoss, self).__init__()
+    def forward(self, target, reco, in_pid, out_pid):
+        return chamfer_loss_split_2(target, reco, in_pid, out_pid)
+
+def chamfer_loss_split_2(target, reco, in_pid, out_pid):
+    #In principle we can even do prediction per PID the same way.. but we can only do this if we manage to speed up the implementation
+    #non zero particles : 
+    n_batches = 0
+    eucl_non_zero = 0.
+    eucl_zero = 0.
+    #256 x 17 x 4 -> numpy , paralilize it 
+    for ib in range(target.shape[0]):
+        x_ib = target[ib].to(target.device)
+        y_ib = reco[ib].to(target.device)
+        #construct masks here based on pid 
+        input_non_zeros_mask = torch.ne(in_pid[ib],0).to(target.device)
+        output_non_zeros_mask = torch.ne(out_pid[ib].argmax(1),0).to(reco.device)
+        x_non_zero = x_ib[input_non_zeros_mask].to(target.device)
+        y_non_zero = y_ib[output_non_zeros_mask].to(target.device)
+        #add a check that checks if y is not empty. if y is empty then loss should be sum of x_non_zero : torch.sum(torch.norm(x_non_zero,dim=-1,p=2))
+
+        n_in_part = max(1,x_non_zero.shape[0]) # to avoid dividing by 0
+        n_out_part = max(1,y_non_zero.shape[0]) 
+        if len(y_non_zero)==0 :
+            eucl_non_zero+=torch.sum(torch.norm(x_non_zero,dim=-1,p=2))/n_in_part
+        elif len(x_non_zero)==0 :
+            eucl_non_zero+=torch.sum(torch.norm(x_non_zero,dim=-1,p=2))/n_out_part
+        else:
+            diff_non_zero = pairwise_distance_per_item(x_non_zero,y_non_zero).to(target.device)
+            dist_non_zero = torch.norm(diff_non_zero, dim=-1,p=2).to(target.device)
+            #eucl for all particles that are not 0 , normal chamfer 
+            min_dist_xy = torch.min(dist_non_zero, dim = -1)
+            min_dist_yx = torch.min(dist_non_zero, dim = -2)
+            eucl_non_zero +=  1./2*(torch.sum(min_dist_xy.values)/n_out_part + torch.sum(min_dist_yx.values)/n_in_part)
+
+        y_zero = y_ib[~output_non_zeros_mask].to(target.device)
+        eucl_zero += torch.sum(torch.norm(y_zero,dim=-1,p=2))/n_out_part
+
+        n_batches+=1
+        
+    eucl_non_zero /= n_batches  
+    eucl_zero /= n_batches
+
+    return  eucl_non_zero,eucl_zero
 
 def chamfer_loss_split(target, reco, in_pid, out_pid, batch):
     #In principle we can even do prediction per PID the same way.. but we can only do this if we manage to speed up the implementation

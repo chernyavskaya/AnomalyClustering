@@ -2,7 +2,7 @@
 #
 #
 from __future__ import print_function, division
-import setGPU
+#import setGPU
 import os,sys
 import argparse
 import pathlib
@@ -31,6 +31,7 @@ from training_utils.activation_funcs  import get_activation_func
 from training_utils.training import pretrain_ae_dense,train_test_ae_dense,train_test_idec_dense,pretrain_ae_graph, train_test_ae_graph,train_test_idec_graph, target_distribution, save_ckp, create_ckp, load_ckp,export_jsondump
 
 from training_utils.plot_losses import loss_curves
+from training_utils.losses import CustomChamferLoss
 
 import os.path as osp
 sys.path.append(os.path.abspath(os.path.join('../../')))
@@ -133,19 +134,22 @@ def train_idec():
 
     pred_labels_last = 0
     delta_label = 1e4
-    model.train()
+    best_test_loss=10000.
     for epoch in range(start_epoch,start_epoch+args.n_epochs_idec):
 
         #evaluation part
+        model.eval()
         if epoch % args.update_interval == 0:
 
-            p_all = torch.zeros((len(train_loader),args.batch_size,args.n_clusters),device=device)
+            #p_all = torch.zeros((len(train_loader),args.batch_size,args.n_clusters),device=device)
+            p_all = []
             for i, data in enumerate(train_loader):
                 data = data.to(device)
 
                 _,_, tmp_q_i, _ = model(data)
                 tmp_q_i = tmp_q_i.data
-                p_all[i] = target_distribution(tmp_q_i)
+                #p_all[i] = target_distribution(tmp_q_i)
+                p_all.append(target_distribution(tmp_q_i))
 
 
             pred_labels = np.array([model.forward(data.to(device))[2].data.cpu().numpy().argmax(1) for i,data in enumerate(train_loader)]) #argmax(1) ##index (cluster nubmber) of the cluster with the highest probability q.
@@ -179,6 +183,7 @@ def train_idec():
                 break
 
         #training part
+        model.train()
         #train_loss,train_kl_loss,train_reco_loss,train_pid_loss,train_energy_loss, train_met_loss = train_test_idec_graph(model,train_loader,p_all,optimizer,device,args.gamma,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight,mode='train')
         #test_loss,test_kl_loss,test_reco_loss,test_pid_loss,test_energy_loss, test_met_loss = train_test_idec_graph(model,test_loader,p_all,optimizer,device,args.gamma,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight,mode='test')
 
@@ -189,7 +194,7 @@ def train_idec():
         print("epoch {} : TRAIN : total loss={:.4f}, kl loss={:.4f}, reco loss={:.4f}, pid loss={:.4f}, energy loss={:.4f}, met loss={:.4f}".format(epoch, train_loss, train_kl_loss, train_reco_loss,train_pid_loss,train_energy_loss, train_met_loss   ))
         print("epoch {} : TEST : total loss={:.4f}, kl loss={:.4f}, reco loss={:.4f}, pid loss={:.4f}, energy loss={:.4f}, met loss={:.4f}".format(epoch, test_loss, test_kl_loss, test_reco_loss,test_pid_loss,test_energy_loss, test_met_loss ))
 
-        scheduler.step(train_loss)
+        #scheduler.step(train_loss)
 
         loss_names=["Loss Tot","Loss KL","Loss Reco","Loss Pid","Loss Energy","Loss Met"]
         for name, loss in zip(loss_names,[train_loss,train_kl_loss,train_reco_loss,train_pid_loss,train_energy_loss, train_met_loss]):
@@ -226,7 +231,7 @@ if __name__ == "__main__":
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     parser.add_argument('--n_top_proc', type=int, default=3)
-    parser.add_argument('--full_kmeans', type=int, default=1)
+    parser.add_argument('--full_kmeans', type=int, default=0)
     parser.add_argument('--retrain_ae', type=int, default=1)
     parser.add_argument('--load_ae', type=str, default='')
     parser.add_argument('--load_idec', type=str, default='')
@@ -234,7 +239,7 @@ if __name__ == "__main__":
     parser.add_argument('--n_clusters', default=3, type=int)
     parser.add_argument('--batch_size', default=256, type=int)
     parser.add_argument('--latent_dim', default=5, type=int)
-    parser.add_argument('--input_shape', default='16,5', type=int)
+    parser.add_argument('--input_shape', default='16,5', type=str)
     parser.add_argument('--num_pid_classes', default=4, type=int)
     parser.add_argument('--hidden_channels', default='8, 12, 16, 20,30,50', type=str)   #8, 12, 16, 20, 25, 30, 40, 60,50,40,30
     parser.add_argument('--dropout', default=0.05, type=float)  
@@ -274,7 +279,7 @@ if __name__ == "__main__":
     #for 1mln dataset : 'process_ID', 'D_KL', 'event_ID', 'charge', 'E','pT','eta','phi']
     #file_dataset = np.array(in_file['dataset'])[:,:,[0,2,4,5,6,7]] 
 
-    file_dataset = np.array(in_file['dataset'])[:2000]
+    file_dataset = np.array(in_file['dataset'])#[:2000]
     #trying temp to see what happens if we separate peak of 0s from eta and phi (activation function and pi cyclicity was changed in the model accordingly)
     #file_dataset[:,1:,4] = np.where(file_dataset[:,1:,1]==0.,0.,file_dataset[:,1:,4]+3.0)
     #file_dataset[:,1:,5] = np.where(file_dataset[:,1:,1]==0.,0.,file_dataset[:,1:,5]+3.4)
