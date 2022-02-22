@@ -112,22 +112,9 @@ def train_idec():
         model, optimizer, scheduler, start_epoch, _,_ = load_ckp(idec_path, model, optimizer, scheduler)
     model.to(device)
 
-
     print('Initializing cluster center with pre-trained weights')
-    mbk, kmeans_initialized = None,None
-    if args.full_kmeans:
-        print('Full k-means')
-        #Full k-means if dataset can fit in memeory (better cluster initialization and faster convergence of the model)
-        kmeans_loader = DataLoaderTorch(train_dataset, batch_size=len(train_dataset), shuffle=False,drop_last=True) #,num_workers=5
-        kmeans_initialized = KMeans(n_clusters=args.n_clusters, n_init=20)
-    else:
-        kmeans_loader = train_loader
-        #Mini batch k-means if k-means on full dataset cannot fit in memory, fast but slower convergence of the model as cluster initialization is not as good
-        print('Minbatch k-means')
-        mbk = MiniBatchKMeans(n_clusters=args.n_clusters, n_init=20, batch_size=args.batch_size)
-    for i, (x,_) in enumerate(kmeans_loader):
-        x = x.to(device)
-        model.clustering(mbk,x,args.full_kmeans,kmeans_initialized)
+    kmeans_initialized = KMeans(n_clusters=args.n_clusters, n_init=20)
+    model.clustering(train_loader,kmeans_initialized)
 
     pred_labels_last = 0
     delta_label = 1e4
@@ -227,7 +214,6 @@ if __name__ == "__main__":
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     parser.add_argument('--n_top_proc', type=int, default=3)
-    parser.add_argument('--full_kmeans', type=int, default=1)
     parser.add_argument('--retrain_ae', type=int, default=1)
     parser.add_argument('--load_ae', type=str, default='')
     parser.add_argument('--load_idec', type=str, default='')
@@ -237,7 +223,7 @@ if __name__ == "__main__":
     parser.add_argument('--latent_dim', default=5, type=int)
     parser.add_argument('--input_shape', default=124, type=int)
     parser.add_argument('--hidden_channels', default='50,40,30,20', type=str)  
-    parser.add_argument('--dropout', default=0.1, type=float)  
+    parser.add_argument('--dropout', default=0.05, type=float)  
     parser.add_argument('--activation', default='leakyrelu_0.5', type=str)  
     parser.add_argument('--n_run', type=int) 
     parser.add_argument('--gamma',default=1.,type=float,help='coefficient of clustering loss')

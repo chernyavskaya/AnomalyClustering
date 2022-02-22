@@ -37,7 +37,6 @@ from training_utils.training import load_ckp
 from models.layers import EdgeConvLayer, EmbeddingLayer
 #torch.autograd.set_detect_anomaly(True)
 
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 eps = 1e-12
 PI = math.pi
 TWOPI = 2*math.pi
@@ -333,11 +332,12 @@ class IDEC(nn.Module):
         self.alpha = alpha
         self.device = device
         self.pretrain_path = pretrain_path
+        self.latent_dim = latent_dim
 
         self.ae = AE
         self.ae.to(self.device)
         # cluster layer
-        self.cluster_layer = Parameter(torch.Tensor(n_clusters, latent_dim))
+        self.cluster_layer = Parameter(torch.Tensor(n_clusters, self.latent_dim))
         torch.nn.init.xavier_normal_(self.cluster_layer.data)
 
 
@@ -350,16 +350,30 @@ class IDEC(nn.Module):
         q = (q.t() / torch.sum(q, 1)).t()
         return x_bar, x_global_bar, q, z
 
-    def clustering(self,mbk,data,full_kmeans=False,kmeans_initialized=None):
+    def clustering(self,data_loader,kmeans_initialized):
+        '''clustering with full k-means'''
+        self.eval()
+        pred_labels_ae = np.zeros((len(data_loader),data_loader.batch_size,self.latent_dim))
+        for i, data in enumerate(data_loader):
+            data = data.to(self.device)
+            _,_,pred_label = self.ae(data)
+            pred_labels_ae[i] = pred_label.detach().cpu().numpy()
+        pred_labels_ae = np.reshape(pred_labels_ae,(pred_labels_ae.shape[0]*pred_labels_ae.shape[1], pred_labels_ae.shape[2]))
+        _ = kmeans_initialized.fit_predict(pred_labels_ae)
+        self.updateClusterCenter(kmeans_initialized.cluster_centers_)
+
+
+    def clustering_batch(self,mbk,data,full_kmeans=False,kmeans_initialized=None):
+        '''clustering with full or mini batch k-means'''
         self.eval()
         _,_,pred_labels_ae = self.ae(data)
 
         if full_kmeans:
-            y_pred = kmeans_initialized.fit_predict(pred_labels_ae.data.cpu().numpy())
+            _ = kmeans_initialized.fit_predict(pred_labels_ae.data.cpu().numpy())
             self.updateClusterCenter(kmeans_initialized.cluster_centers_)
 
         else:
-            pred_labels = mbk.partial_fit(pred_labels_ae.data.cpu().numpy()) #seems we can only get a centre from batch
+            _ = mbk.partial_fit(pred_labels_ae.data.cpu().numpy()) #seems we can only get a centre from batch
             self.cluster_centers = mbk.cluster_centers_ #keep the cluster centers
             self.updateClusterCenter(self.cluster_centers)
 

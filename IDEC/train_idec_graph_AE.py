@@ -115,21 +115,9 @@ def train_idec():
 
 
     print('Initializing cluster center with pre-trained weights')
-    mbk, kmeans_initialized = None,None
-    if args.full_kmeans:
-        print('Full k-means')
-        #Full k-means if dataset can fit in memeory (better cluster initialization and faster convergence of the model)
-        kmeans_loader = DataLoader(train_dataset, batch_size=len(train_dataset), shuffle=True,drop_last=True) #,num_workers=5
-        kmeans_initialized = KMeans(n_clusters=args.n_clusters, n_init=20)
-    else:
-        kmeans_loader = train_loader
-        #Mini batch k-means if k-means on full dataset cannot fit in memory, fast but slower convergence of the model as cluster initialization is not as good
-        print('Minbatch k-means')
-        mbk = MiniBatchKMeans(n_clusters=args.n_clusters, n_init=20, batch_size=args.batch_size)
+    kmeans_initialized = KMeans(n_clusters=args.n_clusters, n_init=20)
+    model.clustering(train_loader,kmeans_initialized)
 
-    for i, data in enumerate(kmeans_loader):
-        data = data.to(device)
-        model.clustering(mbk,data,args.full_kmeans,kmeans_initialized)
 
     pred_labels_last = 0
     delta_label = 1e4
@@ -183,8 +171,6 @@ def train_idec():
 
         #training part
         model.train()
-        #train_loss,train_kl_loss,train_reco_loss,train_pid_loss,train_energy_loss, train_met_loss = train_test_idec_graph(model,train_loader,p_all,optimizer,device,args.gamma,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight,mode='train')
-        #test_loss,test_kl_loss,test_reco_loss,test_pid_loss,test_energy_loss, test_met_loss = train_test_idec_graph(model,test_loader,p_all,optimizer,device,args.gamma,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight,mode='test')
 
         train_loss,train_kl_loss,train_reco_loss,train_pid_loss,train_energy_loss, train_met_loss = train_test_idec_graph(model,train_loader,p_all,optimizer,device,args.gamma,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight,mode='train')
         test_loss,test_kl_loss,test_reco_loss,test_pid_loss,test_energy_loss, test_met_loss = train_test_idec_graph(model,test_loader,p_all,optimizer,device,args.gamma,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight,mode='test')
@@ -230,7 +216,6 @@ if __name__ == "__main__":
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     parser.add_argument('--n_top_proc', type=int, default=3)
-    parser.add_argument('--full_kmeans', type=int, default=0)
     parser.add_argument('--retrain_ae', type=int, default=1)
     parser.add_argument('--load_ae', type=str, default='')
     parser.add_argument('--load_idec', type=str, default='')
@@ -240,7 +225,7 @@ if __name__ == "__main__":
     parser.add_argument('--latent_dim', default=5, type=int)
     parser.add_argument('--input_shape', default='16,5', type=str)
     parser.add_argument('--num_pid_classes', default=4, type=int)
-    parser.add_argument('--hidden_channels', default='8, 12, 16, 20,30,50', type=str)   #8, 12, 16, 20, 25, 30, 40, 60,50,40,30
+    parser.add_argument('--hidden_channels', default='8, 12, 20,30', type=str)  
     parser.add_argument('--dropout', default=0.05, type=float)  
     parser.add_argument('--activation', default='leakyrelu_0.5', type=str)  
     parser.add_argument('--n_run', type=int) 
@@ -278,7 +263,7 @@ if __name__ == "__main__":
     #for 1mln dataset : 'process_ID', 'D_KL', 'event_ID', 'charge', 'E','pT','eta','phi']
     #file_dataset = np.array(in_file['dataset'])[:,:,[0,2,4,5,6,7]] 
 
-    file_dataset = np.array(in_file['dataset'])[:2000]
+    file_dataset = np.array(in_file['dataset'])#[:2000]
 
 
     prepared_dataset,datas =  data_proc.prepare_graph_datas(file_dataset,args.input_shape[0],n_top_proc = args.n_top_proc,connect_only_real=True)
