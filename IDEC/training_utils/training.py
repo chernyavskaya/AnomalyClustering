@@ -19,7 +19,7 @@ from torch_geometric.data import Data, Batch, DataLoader
 from torch_geometric.utils import to_dense_batch
 
 from training_utils.metrics import cluster_acc
-from training_utils.losses import chamfer_loss,huber_mask,categorical_loss,huber_loss,global_met_loss,chamfer_loss_split, chamfer_loss_split_parallel, chamfer_loss_split_parallel_tensor,chamfer_loss_split_pid_parallel, CustomChamferLoss
+from training_utils.losses import chamfer_loss,huber_mask,categorical_loss,huber_loss,global_met_loss,chamfer_loss_split, ChamferLossSplit, ChamferLossSplitPID
 from training_utils.plot_losses import loss_curves
 from tensorboard.backend.event_processing import event_accumulator
 import multiprocessing as mp
@@ -141,13 +141,12 @@ def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight
     else:
         model.train()
 
-    chamfer_loss_module = CustomChamferLoss()
+    chamfer_loss_module = ChamferLossSplit()
+    #chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.num_pid_classes))
     chamfer_loss_func = torch.nn.DataParallel(chamfer_loss_module, device_ids=[0, 1])
 
     total_loss, total_reco_loss, total_pid_loss, total_energy_loss, total_met_loss, total_reco_zero_loss = 0.,0.,0.,0.,0.,0.
     t = tqdm.tqdm(enumerate(loader),total=len(loader))
-    #pool = mp.Pool(mp.cpu_count())
-    pool = torch_mp.Pool(mp.cpu_count())
 
     for i, data in t:
         data = data.to(device)
@@ -162,12 +161,6 @@ def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight
             with torch.no_grad():
                 x_bar,x_met_bar, z = model(data)
 
-        #x_embedded = model.embedded_input
-        #loss = F.mse_loss(x_bar, x) 
-        #loss, xy_idx, yx_idx = chamfer_loss(x_embedded,x_bar,batch_index)
-        #reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.ae.num_pid_classes:],batch_index)
-        #reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,[model.eta_idx,model.phi_idx]],x_bar[:,[model.num_pid_classes-1 + model.eta_idx, model.num_pid_classes-1 + model.phi_idx]],batch_index)
-
         #reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.num_pid_classes:],batch_index)
 
         #use chamefer only to get indecies first 
@@ -179,33 +172,14 @@ def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight
 
         nll_loss = torch.nn.NLLLoss(reduction='mean',weight=pid_weight)
         pid_loss = categorical_loss(x[:,0],x_bar[:,0:model.num_pid_classes],xy_idx, yx_idx,nll_loss) #target, reco
-
-
-        #target_dense = to_dense_batch(x[:,1:], batch_index)[0].clone().detach().cpu().numpy()
-        #reco_dense = to_dense_batch(x_bar[:,model.num_pid_classes:], batch_index)[0].detach().cpu().numpy()
-        #in_pid_dense = to_dense_batch(x[:,0], batch_index)[0].clone().detach().cpu().numpy()
-        #out_pid_dense = to_dense_batch(x_bar[:,0:model.num_pid_classes].argmax(1), batch_index)[0].clone().detach().cpu().numpy()
-        #WE MIGHT NEED TO ADD A WEIGHT FACTOR TO RECO_ZERO loss, e.g. x 10 ?  Because zero loss is clearly much much smaller than the other reco .
-        #reco_loss, reco_zero_loss =  chamfer_loss_split_parallel(pool,target_dense, reco_dense, in_pid_dense, out_pid_dense)
-
-        #target_dense = to_dense_batch(x[:,1:], batch_index)[0].cpu().share_memory_()
-        #reco_dense = to_dense_batch(x_bar[:,model.num_pid_classes:], batch_index)[0].cpu().share_memory_()
-        #in_pid_dense = to_dense_batch(x[:,0], batch_index)[0].cpu().share_memory_()
-        #out_pid_dense = to_dense_batch(x_bar[:,0:model.num_pid_classes].argmax(1), batch_index)[0].cpu().share_memory_()
-        #reco_loss, reco_zero_loss =  chamfer_loss_split_parallel_tensor(pool,target_dense, reco_dense, in_pid_dense, out_pid_dense)
-
-
-        #pids = np.arange(model.num_pid_classes)
-        #reco_loss, reco_zero_loss =  chamfer_loss_split_pid_parallel(pool,target_dense, reco_dense, in_pid_dense, out_pid_dense,pids)
         
-        #reco_loss, reco_zero_loss =  chamfer_loss_split(x[:,1:],x_bar[:,model.num_pid_classes:],x[:,0],x_bar[:,0:model.num_pid_classes],batch_index)
-
         target_dense = to_dense_batch(x[:,1:], batch_index)[0]
         reco_dense = to_dense_batch(x_bar[:,model.num_pid_classes:], batch_index)[0]
         in_pid_dense = to_dense_batch(x[:,0], batch_index)[0]
-        out_pid_dense = to_dense_batch(x_bar[:,0:model.num_pid_classes], batch_index)[0]
+        out_pid_dense = to_dense_batch(x_bar[:,0:model.num_pid_classes].argmax(1), batch_index)[0]
+
         res = chamfer_loss_func(target_dense,reco_dense,in_pid_dense,out_pid_dense)
-        res_gathered = torch.sum(torch.stack(res,dim=0),dim=1)
+        res_gathered = torch.mean(torch.stack(res,dim=0),dim=1)
         reco_loss,reco_zero_loss = res_gathered[0],res_gathered[1]
 
         loss = reco_loss +reco_zero_loss + pid_loss_weight*pid_loss + met_loss_weight*met_loss #+ energy_loss_weight*energy_loss
@@ -222,7 +196,6 @@ def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight
             loss.backward()
             optimizer.step()
 
-    #pool.close()
     i = len(loader)
     return total_loss / (i + 1) , total_reco_loss / (i + 1), total_pid_loss/(i+1), total_energy_loss/(i+1),total_met_loss/(i+1), total_reco_zero_loss / (i + 1)
 
@@ -233,6 +206,10 @@ def train_test_idec_graph(model,loader,p_all,optimizer,device,gamma,pid_weight,p
     else:
         model.train()
 
+    chamfer_loss_module = ChamferLossSplit()
+    #chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.ae.num_pid_classes))
+    chamfer_loss_func = torch.nn.DataParallel(chamfer_loss_module, device_ids=[0, 1])
+    
     total_loss, total_kl_loss,total_reco_loss, total_pid_loss, total_energy_loss, total_met_loss,total_reco_loss = 0.,0., 0.,0.,0.,0.,0.
     t = tqdm.tqdm(enumerate(loader),total=len(loader))
     for i, data in t:
@@ -246,12 +223,6 @@ def train_test_idec_graph(model,loader,p_all,optimizer,device,gamma,pid_weight,p
         x_bar,x_met_bar, q, _ = model(data)
         #p_a = target_distribution(q)
 
-        #x_embedded = model.embedded_input
-        #loss = F.mse_loss(x_bar, x) 
-        #loss, xy_idx, yx_idx = chamfer_loss(x_embedded,x_bar,batch_index)
-        #reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.ae.num_pid_classes:],batch_index)
-        #reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,[model.ae.eta_idx,model.ae.phi_idx]],x_bar[:,[model.ae.num_pid_classes-1 + model.ae.eta_idx, model.ae.num_pid_classes-1 + model.ae.phi_idx]],batch_index)
-
         #reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.ae.num_pid_classes:],batch_index)
         _, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.ae.num_pid_classes:],batch_index)
 
@@ -262,19 +233,17 @@ def train_test_idec_graph(model,loader,p_all,optimizer,device,gamma,pid_weight,p
         nll_loss = torch.nn.NLLLoss(reduction='mean',weight=pid_weight)
         pid_loss = categorical_loss(x[:,0],x_bar[:,0:model.ae.num_pid_classes],xy_idx, yx_idx,nll_loss) #target, reco
 
+        #reco_loss, reco_zero_loss =  chamfer_loss_split(x[:,1:],x_bar[:,model.ae.num_pid_classes:],x[:,0],x_bar[:,0:model.ae.num_pid_classes],batch_index)
+        target_dense = to_dense_batch(x[:,1:], batch_index)[0]
+        reco_dense = to_dense_batch(x_bar[:,model.ae.num_pid_classes:], batch_index)[0]
+        in_pid_dense = to_dense_batch(x[:,0], batch_index)[0]
+        out_pid_dense = to_dense_batch(x_bar[:,0:model.ae.num_pid_classes].argmax(1), batch_index)[0]
 
-        #target_dense = to_dense_batch(x[:,1:], batch_index)[0].detach().cpu().numpy()
-        #reco_dense = to_dense_batch(x_bar[:,model.ae.num_pid_classes:], batch_index)[0].detach().cpu().numpy()
-        #in_pid_dense = to_dense_batch(x[:,0], batch_index)[0].detach().cpu().numpy()
-        #out_pid_dense = to_dense_batch(x_bar[:,0:model.ae.num_pid_classes].argmax(1), batch_index)[0].detach().cpu().numpy()
-        #reco_loss, reco_zero_loss =  chamfer_loss_split_parallel(target_dense, reco_dense, in_pid_dense, out_pid_dense)
-        #reco_loss, reco_zero_loss  = torch.tensor(reco_loss).to(device), torch.tensor(reco_zero_loss).to(device) 
-        reco_loss, reco_zero_loss =  chamfer_loss_split(x[:,1:],x_bar[:,model.ae.num_pid_classes:],x[:,0],x_bar[:,0:model.ae.num_pid_classes],batch_index)
+        res = chamfer_loss_func(target_dense,reco_dense,in_pid_dense,out_pid_dense)
+        res_gathered = torch.mean(torch.stack(res,dim=0),dim=1)
+        reco_loss,reco_zero_loss = res_gathered[0],res_gathered[1]
 
-        #kl_loss = F.kl_div(q.log(), p_all[i].log(),log_target=True,reduction='batchmean')
-        #kl_loss = F.kl_div(q.log(), p_a.log(),log_target=True,reduction='batchmean')
         kl_loss = F.kl_div(q.log(), Variable(p_all[i],requires_grad=False).log(),log_target=True,reduction='batchmean') #requires_grad=True or False
-
 
         loss = gamma * kl_loss + (1.-gamma)*(reco_loss + reco_zero_loss+ pid_loss_weight*pid_loss + met_loss_weight*met_loss) #+ energy_loss_weight*energy_loss 
 

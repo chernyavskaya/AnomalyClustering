@@ -31,7 +31,6 @@ from training_utils.activation_funcs  import get_activation_func
 from training_utils.training import pretrain_ae_dense,train_test_ae_dense,train_test_idec_dense,pretrain_ae_graph, train_test_ae_graph,train_test_idec_graph, target_distribution, save_ckp, create_ckp, load_ckp,export_jsondump
 
 from training_utils.plot_losses import loss_curves
-from training_utils.losses import CustomChamferLoss
 
 import os.path as osp
 sys.path.append(os.path.abspath(os.path.join('../../')))
@@ -279,10 +278,8 @@ if __name__ == "__main__":
     #for 1mln dataset : 'process_ID', 'D_KL', 'event_ID', 'charge', 'E','pT','eta','phi']
     #file_dataset = np.array(in_file['dataset'])[:,:,[0,2,4,5,6,7]] 
 
-    file_dataset = np.array(in_file['dataset'])#[:2000]
-    #trying temp to see what happens if we separate peak of 0s from eta and phi (activation function and pi cyclicity was changed in the model accordingly)
-    #file_dataset[:,1:,4] = np.where(file_dataset[:,1:,1]==0.,0.,file_dataset[:,1:,4]+3.0)
-    #file_dataset[:,1:,5] = np.where(file_dataset[:,1:,1]==0.,0.,file_dataset[:,1:,5]+3.4)
+    file_dataset = np.array(in_file['dataset'])[:2000]
+
 
     prepared_dataset,datas =  data_proc.prepare_graph_datas(file_dataset,args.input_shape[0],n_top_proc = args.n_top_proc,connect_only_real=True)
     #go back to this and test again.

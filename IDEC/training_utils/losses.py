@@ -22,147 +22,29 @@ def cycle_by_2pi(in_tensor):
     return in_tensor
 
 
-def huber_mask(inputs, outputs):
+def huber_mask(inputs, outputs,delta=10.):
     #the masking is already applied at the level of output nodes
     #input_zeros_mask = torch.ne(inputs,0).float().to(inputs.device)
     #outputs= input_zeros_mask * outputs
     # we might want to introduce different weighting to the parts of the loss with  jets/muons/...
-    loss_fnc = torch.nn.HuberLoss(delta=10.0)
+    loss_fnc = torch.nn.HuberLoss(delta=delta)
     loss = loss_fnc(inputs,outputs)
     return loss
 
-def chamfer_loss_split_parallel(pool,target, reco, in_pid, out_pid):
-    n_batches = target.shape[0]
-
-    eucl_list = np.array([pool.apply(chamfer_loss_split_per_batch_element, args=(target[i], reco[i], in_pid[i], out_pid[i])) for i in range(0,n_batches)])
-    reduce_sum = eucl_list.sum(axis=0)
-    return reduce_sum[0]/n_batches,reduce_sum[1]/n_batches
 
 
-def chamfer_loss_split_pid_parallel(pool,target, reco, in_pid, out_pid,pids):
-    n_batches = target.shape[0]
-
-    eucl_list = np.array([pool.apply(chamfer_loss_split_pid_per_batch_element, args=(target[i], reco[i], in_pid[i], out_pid[i],pids)) for i in range(0,n_batches)])
-    #pool.close()  
-    reduce_sum = eucl_list.sum(axis=0)/n_batches
-    #return total loss for non 0 particles (summed over all pid), and 0.
-    return np.sum(reduce_sum[1:]),reduce_sum[0]
-
-
-def chamfer_loss_split_per_batch_element(x_ib, y_ib, in_pid_dense, out_pid_dense):
-    eucl_non_zero = 0.
-    eucl_zero = 0.
-
-    #construct masks here based on pid 
-    input_non_zeros_mask = np.not_equal(in_pid_dense,0)
-    output_non_zeros_mask = np.not_equal(out_pid_dense,0)
-    x_non_zero = x_ib[input_non_zeros_mask]
-    y_non_zero = y_ib[output_non_zeros_mask]
-    n_in_part = max(1,x_non_zero.shape[0]) # to avoid dividing by 0
-    n_out_part = max(1,y_non_zero.shape[0]) 
-    if len(y_non_zero)==0 :
-        eucl_non_zero+=np.sum(np.sqrt(np.sum(x_non_zero**2,axis=-1)))/n_in_part
-    elif len(x_non_zero)==0 :
-        eucl_non_zero+=np.sum(np.sqrt(np.sum(y_non_zero**2,axis=-1)))/n_out_part
-    else:
-        n_in_part = x_non_zero.shape[0]
-        n_out_part = y_non_zero.shape[0]
-        diff_non_zero = np.expand_dims(x_non_zero,1) - np.expand_dims(y_non_zero,0)
-        dist_non_zero =np.sqrt(np.sum(diff_non_zero**2,axis=-1))
-        #eucl for all particles that are not 0 , normal chamfer 
-        min_dist_xy = np.min(dist_non_zero, axis=-1)
-        min_dist_yx = np.min(dist_non_zero, axis=-2)
-        eucl_non_zero +=  1./2*(np.sum(min_dist_xy)/n_out_part + np.sum(min_dist_yx)/n_in_part)
-
-    y_zero = y_ib[~output_non_zeros_mask]
-    n_out_part = max(1,y_zero.shape[0])
-    eucl_zero += np.sum(np.sqrt(np.sum(y_zero**2,axis=-1)))/n_out_part
-    return [eucl_non_zero, eucl_zero]
-
-
-
-def chamfer_loss_split_pid_per_batch_element(x_ib, y_ib, in_pid_dense, out_pid_dense,pids):
-    eucl_non_zero = 0.
-    eucl_zero = 0.
-    #pids 
-    eucl_losses = np.zeros(len(pids))
-    #loop with real particles (pid != 0)
-    for pid in pids[1:]:
-        #construct masks here based on pid 
-        input_pid_mask = np.equal(in_pid_dense,pid)
-        output_pid_mask = np.equal(out_pid_dense,pid)
-        x_masked = x_ib[input_pid_mask]
-        y_masked = y_ib[output_pid_mask]
-        n_in_part = max(1,x_masked.shape[0]) # to avoid dividing by 0
-        n_out_part = max(1,y_masked.shape[0]) 
-        #Devision per particle is needed because we have different occurence and multiplicity for different pid
-        if len(y_masked)==0 :
-            eucl_losses[pid]+=np.sum(np.sqrt(np.sum(x_masked**2,axis=-1)))#/n_in_part
-        elif len(x_masked)==0 :
-            eucl_losses[pid]+=np.sum(np.sqrt(np.sum(y_masked**2,axis=-1)))#/n_out_part
-        else:
-            diff = np.expand_dims(x_masked,1) - np.expand_dims(x_masked,0)
-            dist =np.sqrt(np.sum(diff**2,axis=-1))
-            #eucl for all particles that are not 0 , normal chamfer 
-            min_dist_xy = np.min(dist, axis=-1)
-            min_dist_yx = np.min(dist, axis=-2)
-            eucl_losses[pid] +=  1./2*(np.sum(min_dist_xy)/n_out_part + np.sum(min_dist_yx)/n_in_part)
-
-    #handle zeros :
-    output_zeros_mask = np.equal(out_pid_dense,0)
-    y_zero = y_ib[output_zeros_mask]
-    #n_out_part = max(1,y_zero.shape[0])
-    #Zeros :  do we want to divide here by n_out_part. Maybe not. 
-    eucl_losses[0] += np.sum(np.sqrt(np.sum(y_zero**2,axis=-1)))#/n_out_part
-    return eucl_losses
-
-
-
-def chamfer_loss_split_parallel_tensor(pool,target, reco, in_pid, out_pid):
-    n_batches = target.shape[0]
-
-    eucl_list = [pool.apply(chamfer_loss_split_per_batch_tensor, args=(target[i], reco[i], in_pid[i], out_pid[i])) for i in range(0,n_batches)]
-    reduce_sum = torch.sum(eucl_list,dim=0)
-    return reduce_sum[0]/n_batches,reduce_sum[1]/n_batches
-
-def chamfer_loss_split_per_batch_tensor(x_ib, y_ib, in_pid, out_pid):
-    eucl_non_zero = 0.
-    eucl_zero = 0.
-
-    #construct masks here based on pid 
-    input_non_zeros_mask = torch.ne(in_pid,0).to(x_ib.device)
-    output_non_zeros_mask = torch.ne(out_pid.argmax(1),0).to(x_ib.device)
-    x_non_zero = x_ib[input_non_zeros_mask]
-    y_non_zero = y_ib[output_non_zeros_mask]
-    n_in_part = max(1,x_non_zero.shape[0]) # to avoid dividing by 0
-    n_out_part = max(1,y_non_zero.shape[0]) 
-    if len(y_non_zero)==0 :
-        eucl_non_zero+=torch.sum(torch.norm(x_non_zero,dim=-1,p=2))/n_in_part
-    elif len(x_non_zero)==0 :
-        eucl_non_zero+=torch.sum(torch.norm(x_non_zero,dim=-1,p=2))/n_out_part
-    else:
-        diff_non_zero = pairwise_distance_per_item(x_non_zero,y_non_zero).to(x_ib.device)
-        dist_non_zero = torch.norm(diff_non_zero, dim=-1,p=2).to(x_ib.device)
-        #eucl for all particles that are not 0 , normal chamfer 
-        min_dist_xy = torch.min(dist_non_zero, dim = -1)
-        min_dist_yx = torch.min(dist_non_zero, dim = -2)
-        eucl_non_zero +=  1./2*(torch.sum(min_dist_xy.values)/n_out_part + torch.sum(min_dist_yx.values)/n_in_part)
-
-    y_zero = y_ib[~output_non_zeros_mask].to(x_ib.device)
-    eucl_zero += torch.sum(torch.norm(y_zero,dim=-1,p=2))/n_out_part
-
-    return  eucl_non_zero,eucl_zero
-
-class CustomChamferLoss(torch.nn.Module):
+class ChamferLossSplit(torch.nn.Module):
     def __init__(self) :
-        super(CustomChamferLoss, self).__init__()
+        super(ChamferLossSplit, self).__init__()
     def forward(self, target, reco, in_pid, out_pid):
-        return chamfer_loss_split_2(target, reco, in_pid, out_pid)
+        return chamfer_loss_split(target, reco, in_pid, out_pid)
 
-def chamfer_loss_split_2(target, reco, in_pid, out_pid):
-    #In principle we can even do prediction per PID the same way.. but we can only do this if we manage to speed up the implementation
-    #non zero particles : 
-    n_batches = 0
+def chamfer_loss_split(target, reco, in_pid, out_pid):
+    ''' Chamfer loss split into two parts : non-zero particles and zero-particles
+        input : target, reco, in_pid, out_pid
+        output : chamfer loss for non-zero particles, chamfer loss for zero-particles    
+    '''
+    n_batches = 0 #number of events in a sub-batch (sub if multigpu are used)
     eucl_non_zero = 0.
     eucl_zero = 0.
     #256 x 17 x 4 -> numpy , paralilize it 
@@ -171,11 +53,9 @@ def chamfer_loss_split_2(target, reco, in_pid, out_pid):
         y_ib = reco[ib].to(target.device)
         #construct masks here based on pid 
         input_non_zeros_mask = torch.ne(in_pid[ib],0).to(target.device)
-        output_non_zeros_mask = torch.ne(out_pid[ib].argmax(1),0).to(reco.device)
+        output_non_zeros_mask = torch.ne(out_pid[ib],0).to(reco.device)
         x_non_zero = x_ib[input_non_zeros_mask].to(target.device)
         y_non_zero = y_ib[output_non_zeros_mask].to(target.device)
-        #add a check that checks if y is not empty. if y is empty then loss should be sum of x_non_zero : torch.sum(torch.norm(x_non_zero,dim=-1,p=2))
-
         n_in_part = max(1,x_non_zero.shape[0]) # to avoid dividing by 0
         n_out_part = max(1,y_non_zero.shape[0]) 
         if len(y_non_zero)==0 :
@@ -191,7 +71,8 @@ def chamfer_loss_split_2(target, reco, in_pid, out_pid):
             eucl_non_zero +=  1./2*(torch.sum(min_dist_xy.values)/n_out_part + torch.sum(min_dist_yx.values)/n_in_part)
 
         y_zero = y_ib[~output_non_zeros_mask].to(target.device)
-        eucl_zero += torch.sum(torch.norm(y_zero,dim=-1,p=2))/n_out_part
+        n_out_zero_part = max(1,y_zero.shape[0])
+        eucl_zero += torch.sum(torch.norm(y_zero,dim=-1,p=2))/n_out_zero_part
 
         n_batches+=1
         
@@ -200,63 +81,61 @@ def chamfer_loss_split_2(target, reco, in_pid, out_pid):
 
     return  eucl_non_zero,eucl_zero
 
-def chamfer_loss_split(target, reco, in_pid, out_pid, batch):
-    #In principle we can even do prediction per PID the same way.. but we can only do this if we manage to speed up the implementation
-    #non zero particles : 
-    n_batches = 0
+class ChamferLossSplitPID(torch.nn.Module):
+    def __init__(self,pids) :
+        super(ChamferLossSplitPID, self).__init__()
+        self.pids = pids
+    def forward(self, target, reco, in_pid, out_pid):
+        return chamfer_loss_split_pid(target, reco, in_pid, out_pid,self.pids)
+
+
+def chamfer_loss_split_pid(target, reco, in_pid, out_pid, pids):
+    ''' Chamfer loss split into two parts : non-zero particles (each calculated per pid) and zero-particles
+        input : target, reco, in_pid, out_pid
+        output : chamfer loss for non-zero particles which is summed over all pid, chamfer loss for zero-particles    
+    '''
     eucl_non_zero = 0.
     eucl_zero = 0.
-    #256 x 17 x 4 -> numpy , paralilize it 
-    for ib in torch.unique(batch):
-        x_ib = target[batch==ib].to(target.device)
-        y_ib = reco[batch==ib].to(target.device)
-        #construct masks here based on pid 
-        input_non_zeros_mask = torch.ne(in_pid[batch==ib],0).to(target.device)
-        output_non_zeros_mask = torch.ne(out_pid[batch==ib].argmax(1),0).to(reco.device)
-        x_non_zero = x_ib[input_non_zeros_mask].to(target.device)
-        y_non_zero = y_ib[output_non_zeros_mask].to(target.device)
-        #add a check that checks if y is not empty. if y is empty then loss should be sum of x_non_zero : torch.sum(torch.norm(x_non_zero,dim=-1,p=2))
+    eucl_losses = torch.zeros(len(pids)).to(target.device)
+    n_batches = 0 #number of events in a sub-batch (sub if multigpu are used)
+    for ib in range(target.shape[0]):
+        for pid in pids[1:]:
+            #construct masks here based on pid 
+            input_pid_mask = torch.eq(in_pid[ib],pid).to(target.device)
+            output_pid_mask = torch.eq(out_pid[ib],pid).to(target.device)
+            x_masked = target[ib][input_pid_mask].to(target.device)
+            y_masked = reco[ib][output_pid_mask].to(target.device)
+            n_in_part = max(1,x_masked.shape[0]) # to avoid dividing by 0
+            n_out_part = max(1,y_masked.shape[0]) 
+            if len(y_masked)==0 :
+                eucl_losses[pid]+=torch.sum(torch.norm(x_masked,dim=-1,p=2))/n_in_part
+            elif len(x_masked)==0 :
+                eucl_losses[pid]+=torch.sum(torch.norm(y_masked,dim=-1,p=2))/n_out_part
+            else:
+                diff = pairwise_distance_per_item(x_masked,y_masked).to(target.device)
+                dist = torch.norm(diff, dim=-1,p=2).to(target.device)
+                min_dist_xy = torch.min(dist, dim = -1)
+                min_dist_yx = torch.min(dist, dim = -2)
+                eucl_losses[pid] +=  1./2*(torch.sum(min_dist_xy.values)/n_out_part + torch.sum(min_dist_yx.values)/n_in_part)
 
-        n_in_part = max(1,x_non_zero.shape[0]) # to avoid dividing by 0
-        n_out_part = max(1,y_non_zero.shape[0]) 
-        if len(y_non_zero)==0 :
-            eucl_non_zero+=torch.sum(torch.norm(x_non_zero,dim=-1,p=2))/n_in_part
-        elif len(x_non_zero)==0 :
-            eucl_non_zero+=torch.sum(torch.norm(x_non_zero,dim=-1,p=2))/n_out_part
-        else:
-            diff_non_zero = pairwise_distance_per_item(x_non_zero,y_non_zero).to(target.device)
-            dist_non_zero = torch.norm(diff_non_zero, dim=-1,p=2).to(target.device)
-            #eucl for all particles that are not 0 , normal chamfer 
-            min_dist_xy = torch.min(dist_non_zero, dim = -1)
-            min_dist_yx = torch.min(dist_non_zero, dim = -2)
-            eucl_non_zero +=  1./2*(torch.sum(min_dist_xy.values)/n_out_part + torch.sum(min_dist_yx.values)/n_in_part)
-
-        y_zero = y_ib[~output_non_zeros_mask].to(target.device)
-        eucl_zero += torch.sum(torch.norm(y_zero,dim=-1,p=2))/n_out_part
+        output_zeros_mask = torch.eq(out_pid[ib],0).to(target.device)
+        y_zero = reco[ib][output_zeros_mask].to(target.device)
+        n_out_zero_part = max(1,y_zero.shape[0])
+        eucl_losses[0] += torch.sum(torch.norm(y_zero,dim=-1,p=2))/n_out_zero_part
 
         n_batches+=1
-    eucl_non_zero /= n_batches  
-    eucl_zero /= n_batches
 
-    return  eucl_non_zero,eucl_zero
+    for pid in  pids: 
+        eucl_losses[pid] /= n_batches  
+
+    return torch.sum(eucl_losses[1:]),eucl_losses[0]
+
 
 def chamfer_loss(target, reco, batch):
     x = to_dense_batch(target, batch)[0]
     y = to_dense_batch(reco, batch)[0] 
     #dist = pairwise_distance(x,y)
     diff = pairwise_distance(x,y)
-
-    #if coordinate and energy should be weighted differently in the total sum of distances, this should be done here!
-    #should at least check the magnitide of it
-    #diff_0 = diff[:,:,:,0]
-    #diff_1 = diff[:,:,:,1]
-    #diff_2 = diff[:,:,:,2]
-    #diff_3 = diff[:,:,:,3]
-    #sum_min_dist_0 = torch.sum(torch.min(torch.norm(diff_0, dim=-1,p=2), dim = -1).values)
-    #sum_min_dist_1 = torch.sum(torch.min(torch.norm(diff_1, dim=-1,p=2), dim = -1).values)
-    #sum_min_dist_2 = torch.sum(torch.min(torch.norm(diff_2, dim=-1,p=2), dim = -1).values)
-    #sum_min_dist_3 = torch.sum(torch.min(torch.norm(diff_3, dim=-1,p=2), dim = -1).values)
-    #print(sum_min_dist_0,sum_min_dist_1,sum_min_dist_2,sum_min_dist_3)
 
     dist = torch.norm(diff, dim=-1,p=2) #x1 - y1 + eps
 
