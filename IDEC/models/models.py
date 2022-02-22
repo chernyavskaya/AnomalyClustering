@@ -142,13 +142,6 @@ class GraphAE(torch.nn.Module):
 
   def encode(self, data):
     x,x_met,edge_index, batch_index = data.x,data.x_met.reshape((-1,self.input_shape_global)), data.edge_index, data.batch
-    #create learnable embedding of catgeorical variables
-    #if len(self.idx_cat) > 0:
-    #    x_cat = x[:,self.idx_cat]
-    #    x_cont = x[:,self.idx_cont]
-    #    x_cat = self.embeddings(x_cat.long())
-    #    x = torch.cat([x_cat, x_cont], -1) 
-    #self.embedded_input = x.clone()
 
     #Treat global graph features 
     x_met = self.enc_met_fc1(x_met)
@@ -187,9 +180,7 @@ class GraphAE(torch.nn.Module):
     x = self.activation(x)
     batch_size = x.shape[0]
     layer_size = x.shape[-1]
-    #x = torch.reshape(x,(batch_size*self.num_fixed_nodes, int(layer_size/self.num_fixed_nodes)))
-    ######
-    ###try with permutation
+    ###### permutation of graph nodes 
     x = torch.reshape(x,(batch_size,self.num_fixed_nodes, int(layer_size/self.num_fixed_nodes)))
     idx = torch.randint(self.num_fixed_nodes, size=(batch_size, self.num_fixed_nodes)).to(x.get_device())
     x = x.gather(dim=1, index=idx.unsqueeze(-1).expand(x.shape))
@@ -205,18 +196,11 @@ class GraphAE(torch.nn.Module):
     x_phi =  x[:,[self.num_pid_classes-1+self.phi_idx]]
     x_energy_pt = x[:,[self.num_pid_classes-1+self.energy_idx,self.num_pid_classes-1+self.pt_idx]]
     x_phi = cycle_by_2pi(x_phi)
-    #x_phi = PI*torch.tanh(x_phi)
+    x_phi = PI*torch.tanh(x_phi)
     x_eta = 2.8*torch.tanh(x_eta) # have a symmetric activation function that eventually dies out. 
-
-#########
-    #this scaling only applies when eta and pt are transformed to be > 0.
-    #x_phi = 7.*torch.tanh(x_phi)
-    #x_eta = 6.*torch.tanh(x_eta)
-##########
 
     x_energy_pt = F.relu(x_energy_pt)
     #x_energy_pt = F.leaky_relu(x_energy_pt, negative_slope=0.1)
-    #x = torch.cat([x_cat,x[:,self.num_pid_classes:]], dim=-1) 
     x_final = torch.cat([x_cat,x_energy_pt,x_eta,x_phi], dim=-1) 
 
     return x_final,x_met
@@ -355,6 +339,8 @@ class IDEC(nn.Module):
         self.eval()
         pred_labels_ae = np.zeros((len(data_loader),data_loader.batch_size,self.latent_dim))
         for i, data in enumerate(data_loader):
+            if type(data)==list  or type(data)==tuple:
+                data,_ = data
             data = data.to(self.device)
             _,_,pred_label = self.ae(data)
             pred_labels_ae[i] = pred_label.detach().cpu().numpy()

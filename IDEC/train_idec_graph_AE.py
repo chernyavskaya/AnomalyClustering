@@ -35,7 +35,7 @@ from training_utils.plot_losses import loss_curves
 import os.path as osp
 sys.path.append(os.path.abspath(os.path.join('../../')))
 sys.path.append(os.path.abspath(os.path.join('../')))
-import ADgvae.utils_torch.model_summary as summary
+import training_utils.model_summary as summary
 
 #torch.autograd.set_detect_anomaly(True)
 from torch.utils.tensorboard import SummaryWriter
@@ -96,7 +96,7 @@ def train_idec():
             model.ae, optimizer_ae, scheduler_ae, start_epoch, _,_ = load_ckp(pretrain_path, model.ae, optimizer_ae, scheduler_ae)
             model.ae.to(device)
         summary_writer = SummaryWriter(log_dir=osp.join(output_path,'tensorboard_logs_ae/'))
-        pretrain_ae_graph(model.ae,train_loader,test_loader,optimizer_ae,start_epoch,start_epoch+args.n_epochs,pretrain_path,device,scheduler_ae,summary_writer,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight)
+        pretrain_ae_graph(model.ae,train_loader,test_loader,optimizer_ae,start_epoch,start_epoch+args.n_epochs,pretrain_path,device,scheduler_ae,summary_writer,pid_weight,pid_loss_weight,met_loss_weight)
         summary_writer.close()
     else :
         model.ae, optimizer_ae, scheduler_ae, start_epoch,_,_ = load_ckp(pretrain_path, model.ae, optimizer_ae, scheduler_ae)
@@ -172,19 +172,19 @@ def train_idec():
         #training part
         model.train()
 
-        train_loss,train_kl_loss,train_reco_loss,train_pid_loss,train_energy_loss, train_met_loss = train_test_idec_graph(model,train_loader,p_all,optimizer,device,args.gamma,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight,mode='train')
-        test_loss,test_kl_loss,test_reco_loss,test_pid_loss,test_energy_loss, test_met_loss = train_test_idec_graph(model,test_loader,p_all,optimizer,device,args.gamma,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight,mode='test')
+        train_loss,train_kl_loss,train_reco_loss,train_pid_loss, train_met_loss = train_test_idec_graph(model,train_loader,p_all,optimizer,device,args.gamma,pid_weight,pid_loss_weight,met_loss_weight,mode='train')
+        test_loss,test_kl_loss,test_reco_loss,test_pid_loss, test_met_loss = train_test_idec_graph(model,test_loader,p_all,optimizer,device,args.gamma,pid_weight,pid_loss_weight,met_loss_weight,mode='test')
 
 
-        print("epoch {} : TRAIN : total loss={:.4f}, kl loss={:.4f}, reco loss={:.4f}, pid loss={:.4f}, energy loss={:.4f}, met loss={:.4f}".format(epoch, train_loss, train_kl_loss, train_reco_loss,train_pid_loss,train_energy_loss, train_met_loss   ))
-        print("epoch {} : TEST : total loss={:.4f}, kl loss={:.4f}, reco loss={:.4f}, pid loss={:.4f}, energy loss={:.4f}, met loss={:.4f}".format(epoch, test_loss, test_kl_loss, test_reco_loss,test_pid_loss,test_energy_loss, test_met_loss ))
+        print("epoch {} : TRAIN : total loss={:.4f}, kl loss={:.4f}, reco loss={:.4f}, pid loss={:.4f}, met loss={:.4f}".format(epoch, train_loss, train_kl_loss, train_reco_loss,train_pid_loss, train_met_loss   ))
+        print("epoch {} : TEST : total loss={:.4f}, kl loss={:.4f}, reco loss={:.4f}, pid loss={:.4f}, met loss={:.4f}".format(epoch, test_loss, test_kl_loss, test_reco_loss,test_pid_loss, test_met_loss ))
 
         #scheduler.step(train_loss)
 
         loss_names=["Loss Tot","Loss KL","Loss Reco","Loss Pid","Loss Energy","Loss Met"]
-        for name, loss in zip(loss_names,[train_loss,train_kl_loss,train_reco_loss,train_pid_loss,train_energy_loss, train_met_loss]):
+        for name, loss in zip(loss_names,[train_loss,train_kl_loss,train_reco_loss,train_pid_loss, train_met_loss]):
             summary_writer.add_scalar("Training "+ name, loss, epoch)
-        for name, loss in zip(loss_names,[test_loss,test_kl_loss,test_reco_loss,test_pid_loss,test_energy_loss, test_met_loss]):
+        for name, loss in zip(loss_names,[test_loss,test_kl_loss,test_reco_loss,test_pid_loss, test_met_loss]):
             summary_writer.add_scalar("Validation "+ name, loss, epoch)   
         for layer_name, weight in model.named_parameters():
             summary_writer.add_histogram(layer_name,weight, epoch)
@@ -263,12 +263,10 @@ if __name__ == "__main__":
     #for 1mln dataset : 'process_ID', 'D_KL', 'event_ID', 'charge', 'E','pT','eta','phi']
     #file_dataset = np.array(in_file['dataset'])[:,:,[0,2,4,5,6,7]] 
 
-    file_dataset = np.array(in_file['dataset'])#[:2000]
+    file_dataset = np.array(in_file['dataset'])
 
 
     prepared_dataset,datas =  data_proc.prepare_graph_datas(file_dataset,args.input_shape[0],n_top_proc = args.n_top_proc,connect_only_real=True)
-    #go back to this and test again.
-    #adjencency should be fully connected.
 
     pid_weight = data_proc.get_relative_weights(prepared_dataset[:,1:,1].reshape(prepared_dataset[:,1:,1].shape[0]*prepared_dataset[:,1:,1].shape[1]),mode='max')
     #pid_weight = [1.,1.4,5.,5.]
@@ -284,9 +282,8 @@ if __name__ == "__main__":
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False,drop_last=True) #,num_workers=5
 
     #this should be parametrizable 
-    energy_loss_weight = 1.0
     pid_loss_weight = 0.1 #0.1
-    met_loss_weight = 5.0 #5
+    met_loss_weight = 2.0 #5
 
     print(args)
     train_idec()

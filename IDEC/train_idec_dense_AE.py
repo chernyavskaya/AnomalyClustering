@@ -37,7 +37,7 @@ from training_utils.plot_losses import loss_curves
 import os.path as osp
 sys.path.append(os.path.abspath(os.path.join('../../')))
 sys.path.append(os.path.abspath(os.path.join('../')))
-import ADgvae.utils_torch.model_summary as summary
+import training_utils.model_summary as summary
 
 from torch.utils.tensorboard import SummaryWriter
 
@@ -132,12 +132,6 @@ def train_idec():
                 #p_all[i] = target_distribution(tmp_q_i)
                 p_all.append(target_distribution(tmp_q_i))
 
-
-            #for i,(x,_) in enumerate(kmeans_loader):
-            #    x = x.to(device)
-            #    _,_, q ,_ = model(x)
-            #    p_all = target_distribution(q)
-
             pred_labels = np.array([model.forward(x.to(device))[2].data.cpu().numpy().argmax(1) for i,(x,_) in enumerate(train_loader)]) #argmax(1) ##index (cluster nubmber) of the cluster with the highest probability q.
             true_labels = np.array([y.cpu().numpy() for i,(_,y) in enumerate(train_loader)])
             #reshape 
@@ -222,7 +216,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', default=256, type=int)
     parser.add_argument('--latent_dim', default=5, type=int)
     parser.add_argument('--input_shape', default=124, type=int)
-    parser.add_argument('--hidden_channels', default='50,40,30,20', type=str)  
+    parser.add_argument('--hidden_channels', default='100,200,100,50,40,30,20', type=str)  
     parser.add_argument('--dropout', default=0.05, type=float)  
     parser.add_argument('--activation', default='leakyrelu_0.5', type=str)  
     parser.add_argument('--n_run', type=int) 
@@ -251,14 +245,14 @@ if __name__ == "__main__":
 
     DATA_PATH = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/autoencoder_for_anomaly/clustering/inputs/'
     #TRAIN_NAME = 'bkg_l1_filtered_1mln_padded.h5' full dataset to pretrain AE
-    TRAIN_NAME = 'bkg_sig_0.0156_l1_filtered_padded.h5'
-    #TRAIN_NAME = 'bkg_sig_0.0156_l1_filtered_reduced.h5'
+    #TRAIN_NAME = 'bkg_sig_0.0156_l1_filtered_padded.h5' #if full dataset, input shape is 124
+    TRAIN_NAME = 'bkg_sig_0.0156_l1_filtered_reduced.h5' #if reduced dataset, input_shape should be 12
 
     filename_bg = DATA_PATH + TRAIN_NAME 
     in_file = h5py.File(filename_bg, 'r') 
     file_dataset = np.array(in_file['dataset'])
-    file_dataset_1d,_,dataset = data_proc.prepare_1d_datasets(file_dataset,n_top_proc = args.n_top_proc)
-    #file_dataset_1d,_,dataset = data_proc.prepare_1d_reduced_datasets(file_dataset,n_top_proc = args.n_top_proc)
+    #file_dataset_1d,_,dataset = data_proc.prepare_1d_datasets(file_dataset,n_top_proc = args.n_top_proc)
+    file_dataset_1d,_,dataset = data_proc.prepare_1d_reduced_datasets(file_dataset,n_top_proc = args.n_top_proc)
 
     train_test_split = 0.9
     train_len = int(len(dataset)*train_test_split)

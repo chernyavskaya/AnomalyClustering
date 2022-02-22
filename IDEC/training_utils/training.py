@@ -135,7 +135,7 @@ def target_distribution(q):
     return (weight.t() / weight.sum(dim=1)).t()
 
 
-def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight,mode='test'):
+def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight,met_loss_weight,mode='test'):
     if mode=='test':
         model.eval()
     else:
@@ -145,7 +145,7 @@ def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight
     #chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.num_pid_classes))
     chamfer_loss_func = torch.nn.DataParallel(chamfer_loss_module, device_ids=[0, 1])
 
-    total_loss, total_reco_loss, total_pid_loss, total_energy_loss, total_met_loss, total_reco_zero_loss = 0.,0.,0.,0.,0.,0.
+    total_loss, total_reco_loss, total_pid_loss, total_met_loss, total_reco_zero_loss = 0.,0.,0.,0.,0.
     t = tqdm.tqdm(enumerate(loader),total=len(loader))
 
     for i, data in t:
@@ -182,14 +182,12 @@ def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight
         res_gathered = torch.mean(torch.stack(res,dim=0),dim=1)
         reco_loss,reco_zero_loss = res_gathered[0],res_gathered[1]
 
-        loss = reco_loss +reco_zero_loss + pid_loss_weight*pid_loss + met_loss_weight*met_loss #+ energy_loss_weight*energy_loss
+        loss = reco_loss +reco_zero_loss + pid_loss_weight*pid_loss + met_loss_weight*met_loss 
         total_loss += loss.item()
         total_reco_loss += reco_loss.item()
         total_reco_zero_loss  += reco_zero_loss.item()
         total_pid_loss += pid_loss.item()
         total_met_loss += met_loss.item()
-        #total_energy_loss += energy_loss.item()
-        total_energy_loss += 0. 
 
 
         if mode=='train':
@@ -197,10 +195,10 @@ def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight
             optimizer.step()
 
     i = len(loader)
-    return total_loss / (i + 1) , total_reco_loss / (i + 1), total_pid_loss/(i+1), total_energy_loss/(i+1),total_met_loss/(i+1), total_reco_zero_loss / (i + 1)
+    return total_loss / (i + 1) , total_reco_loss / (i + 1), total_pid_loss/(i+1), total_met_loss/(i+1), total_reco_zero_loss / (i + 1)
 
 
-def train_test_idec_graph(model,loader,p_all,optimizer,device,gamma,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight,mode='test'):
+def train_test_idec_graph(model,loader,p_all,optimizer,device,gamma,pid_weight,pid_loss_weight,met_loss_weight,mode='test'):
     if mode=='test':
         model.eval()
     else:
@@ -210,7 +208,7 @@ def train_test_idec_graph(model,loader,p_all,optimizer,device,gamma,pid_weight,p
     #chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.ae.num_pid_classes))
     chamfer_loss_func = torch.nn.DataParallel(chamfer_loss_module, device_ids=[0, 1])
     
-    total_loss, total_kl_loss,total_reco_loss, total_pid_loss, total_energy_loss, total_met_loss,total_reco_loss = 0.,0., 0.,0.,0.,0.,0.
+    total_loss, total_kl_loss,total_reco_loss, total_pid_loss, total_met_loss,total_reco_loss = 0., 0.,0.,0.,0.,0.
     t = tqdm.tqdm(enumerate(loader),total=len(loader))
     for i, data in t:
         data = data.to(device)
@@ -221,7 +219,7 @@ def train_test_idec_graph(model,loader,p_all,optimizer,device,gamma,pid_weight,p
         if mode=='train':
             optimizer.zero_grad()
         x_bar,x_met_bar, q, _ = model(data)
-        #p_a = target_distribution(q)
+        p_a = target_distribution(q)
 
         #reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.ae.num_pid_classes:],batch_index)
         _, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.ae.num_pid_classes:],batch_index)
@@ -243,44 +241,43 @@ def train_test_idec_graph(model,loader,p_all,optimizer,device,gamma,pid_weight,p
         res_gathered = torch.mean(torch.stack(res,dim=0),dim=1)
         reco_loss,reco_zero_loss = res_gathered[0],res_gathered[1]
 
-        kl_loss = F.kl_div(q.log(), Variable(p_all[i],requires_grad=False).log(),log_target=True,reduction='batchmean') #requires_grad=True or False
+        #kl_loss = F.kl_div(q.log(), Variable(p_all[i],requires_grad=True).log(),log_target=True,reduction='batchmean') 
+        kl_loss = F.kl_div(q.log(), Variable(p_a,requires_grad=True).log(),log_target=True,reduction='batchmean') 
 
-        loss = gamma * kl_loss + (1.-gamma)*(reco_loss + reco_zero_loss+ pid_loss_weight*pid_loss + met_loss_weight*met_loss) #+ energy_loss_weight*energy_loss 
+        loss = gamma * kl_loss + (1.-gamma)*(reco_loss + reco_zero_loss+ pid_loss_weight*pid_loss + met_loss_weight*met_loss) 
 
         total_loss += loss.item()
         total_kl_loss += kl_loss.item()
         total_reco_loss += reco_loss.item()
         total_pid_loss += pid_loss.item()
         total_met_loss += met_loss.item()
-        #total_energy_loss += energy_loss.item()
-        total_energy_loss += 0. 
 
         if mode=='train':
             loss.backward()
             optimizer.step()
     i = len(loader)
-    return total_loss / (i + 1) , total_kl_loss / (i+1), total_reco_loss / (i + 1), total_pid_loss/(i+1), total_energy_loss/(i+1),total_met_loss/(i+1)
+    return total_loss / (i + 1) , total_kl_loss / (i+1), total_reco_loss / (i + 1), total_pid_loss/(i+1), total_met_loss/(i+1)
 
 
 
-def pretrain_ae_graph(model,train_loader,test_loader,optimizer,start_epoch,n_epochs,pretrain_path,device,scheduler,summary_writer,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight):
+def pretrain_ae_graph(model,train_loader,test_loader,optimizer,start_epoch,n_epochs,pretrain_path,device,scheduler,summary_writer,pid_weight,pid_loss_weight,met_loss_weight):
     '''
     pretrain autoencoder for graph
     '''
     best_test_loss=10000.
     for epoch in range(start_epoch,n_epochs):
-        train_loss , train_reco_loss, train_pid_loss, train_energy_loss, train_met_loss,train_reco_zero_loss = train_test_ae_graph(model,train_loader,optimizer,device,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight,mode='train')
-        test_loss , test_reco_loss, test_pid_loss, test_energy_loss, test_met_loss,test_reco_zero_loss = train_test_ae_graph(model,test_loader,optimizer,device,pid_weight,pid_loss_weight,met_loss_weight,energy_loss_weight,mode='test')
+        train_loss , train_reco_loss, train_pid_loss, train_met_loss,train_reco_zero_loss = train_test_ae_graph(model,train_loader,optimizer,device,pid_weight,pid_loss_weight,met_loss_weight,mode='train')
+        test_loss , test_reco_loss, test_pid_loss, test_met_loss,test_reco_zero_loss = train_test_ae_graph(model,test_loader,optimizer,device,pid_weight,pid_loss_weight,met_loss_weight,mode='test')
 
-        print("epoch {} : TRAIN : total loss={:.4f}, reco loss={:.4f}, pid loss={:.4f}, energy loss={:.4f}, met loss={:.4f}, reco zero loss={:.4f}  ".format(epoch, train_loss , train_reco_loss, train_pid_loss, train_energy_loss, train_met_loss,train_reco_zero_loss))
-        print("epoch {} : TEST : total loss={:.4f}, reco loss={:.4f}, pid loss={:.4f}, energy loss={:.4f}, met loss={:.4f}, reco zero loss={:.4f}  ".format(epoch,test_loss , test_reco_loss, test_pid_loss, test_energy_loss, test_met_loss,test_reco_zero_loss ))
+        print("epoch {} : TRAIN : total loss={:.4f}, reco loss={:.4f}, pid loss={:.4f}, met loss={:.4f}, reco zero loss={:.4f}  ".format(epoch, train_loss , train_reco_loss, train_pid_loss, train_met_loss,train_reco_zero_loss))
+        print("epoch {} : TEST : total loss={:.4f}, reco loss={:.4f}, pid loss={:.4f}, met loss={:.4f}, reco zero loss={:.4f}  ".format(epoch,test_loss , test_reco_loss, test_pid_loss, test_met_loss,test_reco_zero_loss ))
         #Here scheduler is used with train loss only because we have 70k events to train and 7 to test (too little)
-        scheduler.step(train_loss)
+        scheduler.step(test_loss)
 
-        loss_names = ["Loss Tot","Loss Reco","Loss Pid","Loss Energy","Loss Met","Loss Reco Zero"]
-        for name, loss in zip(loss_names,[train_loss , train_reco_loss, train_pid_loss, train_energy_loss, train_met_loss,train_reco_zero_loss]):
+        loss_names = ["Loss Tot","Loss Reco","Loss Pid","Loss Met","Loss Reco Zero"]
+        for name, loss in zip(loss_names,[train_loss , train_reco_loss, train_pid_loss, train_met_loss,train_reco_zero_loss]):
             summary_writer.add_scalar("Training "+ name, loss, epoch)
-        for name, loss in zip(loss_names,[test_loss , test_reco_loss, test_pid_loss, test_energy_loss, test_met_loss,test_reco_zero_loss]):
+        for name, loss in zip(loss_names,[test_loss , test_reco_loss, test_pid_loss, test_met_loss,test_reco_zero_loss]):
             summary_writer.add_scalar("Validation "+ name, loss, epoch)   
         for layer_name, weight in model.named_parameters():
             summary_writer.add_histogram(layer_name,weight, epoch)
@@ -351,11 +348,8 @@ def train_test_idec_dense(model,loader,p_all,optimizer,device,gamma,mode='test')
         p_a = target_distribution(q)
 
         reco_loss = huber_mask(x,x_bar)
-        kl_loss = F.kl_div(q.log(), Variable(p_all[i],requires_grad=True).log(),log_target=True,reduction='batchmean') #requires_grad=True or False
-        #kl_loss = F.kl_div(q.log(), p_all[i].log(),log_target=True,reduction='batchmean') 
-
-        #kl_loss = F.kl_div(q.log(), Variable(p_ßall[i*batch_size:(i+1)*batch_size],requires_grad=False).log(),log_target=True,reduction='batchmean') #works but requires loading everything into memmory
-        #kl_loss = F.kl_div(q.log(), p_a.log(),log_target=True,reduction='batchmean') #works but not what I need
+        #kl_loss = F.kl_div(q.log(), Variable(p_all[i],requires_grad=True).log(),log_target=True,reduction='batchmean')  
+        kl_loss = F.kl_div(q.log(), Variable(p_a,requires_grad=True).log(),log_target=True,reduction='batchmean') 
 
         loss = gamma * kl_loss + (1.-gamma)*reco_loss 
 
@@ -385,7 +379,7 @@ def pretrain_ae_dense(model,train_loader,test_loader,optimizer,start_epoch,n_epo
         print("epoch {} : TRAIN : total loss={:.4f}".format(epoch, train_loss ))
         print("epoch {} : TEST : total loss={:.4f}".format(epoch, test_loss ))
 
-        scheduler.step(train_loss)
+        scheduler.step(test_loss)
 
         summary_writer.add_scalar("Training Loss Tot", train_loss, epoch)
         summary_writer.add_scalar("Validation Loss Tot", test_loss, epoch)
@@ -402,6 +396,7 @@ def pretrain_ae_dense(model,train_loader,test_loader,optimizer,start_epoch,n_epo
         if epoch>10 and epoch%10==0:
             checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
             save_ckp(checkpoint, pretrain_path.replace('.pkl','_epoch_{}.pkl'.format(epoch+1)))
+            print("model saved to {}.".format(pretrain_path))
 
     checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
     save_ckp(checkpoint, pretrain_path.replace('.pkl','_epoch_{}.pkl'.format(epoch+1)))

@@ -22,7 +22,7 @@ def cycle_by_2pi(in_tensor):
     return in_tensor
 
 
-def huber_mask(inputs, outputs,delta=10.):
+def huber_mask(inputs, outputs,delta=5.):
     #the masking is already applied at the level of output nodes
     #input_zeros_mask = torch.ne(inputs,0).float().to(inputs.device)
     #outputs= input_zeros_mask * outputs
