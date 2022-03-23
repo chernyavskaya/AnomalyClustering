@@ -7,18 +7,24 @@ class EmbeddingLayer(nn.Module):
     """
     Embedding layer.
     Automatically splits input Tensors based on embedding sizes;
-    then, embeds each feature separately and concatenates the output
+    then, embeds each feature separately and sums the embeddings
     back into a single outpuut Tensor.
     """
 
-    def __init__(self, emb_szs):
+    def __init__(self, emb_szs,mode='sum'):
         super().__init__()
         self.embeddings = nn.ModuleList([nn.Embedding(in_sz, out_sz) for in_sz, out_sz in emb_szs])
+        self.mode = mode
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = [emb(x[..., i]) for i, emb in enumerate(self.embeddings)]
-        x = torch.cat(x, dim=-1)
-        return x
+        if self.mode=='concat' :
+            embedded_vars = torch.cat(x, dim=-1) #concatenate embedding , bad practice
+        else :
+            #We will sum embeddings instead 
+            stacked_embedded_vars = torch.stack(x, dim=0)
+            embedded_vars = torch.sum(stacked_embedded_vars, dim=0)
+        return embedded_vars
 
 
 class EdgeConvLayer(nn.Module):   

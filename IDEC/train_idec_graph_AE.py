@@ -42,6 +42,8 @@ from torch.utils.tensorboard import SummaryWriter
 import multiprocessing as mp
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+#device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+#device = torch.device('cpu')
 
 
 def train_idec():
@@ -114,6 +116,7 @@ def train_idec():
     model.to(device)
 
 
+    #check if we save center parameters in the checkpoitn, so we can restart the training of idec from the previous centers.
     print('Initializing cluster center with pre-trained weights')
     kmeans_initialized = KMeans(n_clusters=args.n_clusters, n_init=20)
     model.clustering(train_loader,kmeans_initialized)
@@ -179,7 +182,7 @@ def train_idec():
         print("epoch {} : TRAIN : total loss={:.4f}, kl loss={:.4f}, reco loss={:.4f}, pid loss={:.4f}, met loss={:.4f}".format(epoch, train_loss, train_kl_loss, train_reco_loss,train_pid_loss, train_met_loss   ))
         print("epoch {} : TEST : total loss={:.4f}, kl loss={:.4f}, reco loss={:.4f}, pid loss={:.4f}, met loss={:.4f}".format(epoch, test_loss, test_kl_loss, test_reco_loss,test_pid_loss, test_met_loss ))
 
-        #scheduler.step(train_loss)
+        scheduler.step(train_loss)
 
         loss_names=["Loss Tot","Loss KL","Loss Reco","Loss Pid","Loss Energy","Loss Met"]
         for name, loss in zip(loss_names,[train_loss,train_kl_loss,train_reco_loss,train_pid_loss, train_met_loss]):
@@ -191,15 +194,17 @@ def train_idec():
             if layer_name!='cluster_layer':
                 summary_writer.add_histogram(f'{layer_name}.grad',weight.grad, epoch)
 
+        if epoch>=10 and epoch%10==0:
+            checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
+            save_ckp(checkpoint, idec_path.replace('.pkl','_epoch_{}.pkl'.format(epoch+1)))
+            print('New checkpoint for epoch {} saved'.format(epoch+1))
+
         if epoch>=10 and test_loss < best_test_loss*1.01: #allow variation within 1%
             best_test_loss = test_loss
             checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
             print('New best model saved')
             best_fpath = idec_path.replace(idec_path.rsplit('/', 1)[-1],'')+'best_model_IDEC.pkl'
             save_ckp(checkpoint, best_fpath)
-        if epoch>=10 and epoch%10==0:
-            checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
-            save_ckp(checkpoint, idec_path.replace('.pkl','_epoch_{}.pkl'.format(epoch+1)))
 
         
     checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
@@ -222,12 +227,12 @@ if __name__ == "__main__":
     parser.add_argument('--lr', type=float, default=0.005)
     parser.add_argument('--n_clusters', default=3, type=int)
     parser.add_argument('--batch_size', default=256, type=int)
-    parser.add_argument('--latent_dim', default=5, type=int)
-    parser.add_argument('--input_shape', default='16,5', type=str)
-    parser.add_argument('--num_pid_classes', default=4, type=int)
-    parser.add_argument('--hidden_channels', default='8, 12, 20,30', type=str)  
-    parser.add_argument('--dropout', default=0.05, type=float)  
-    parser.add_argument('--activation', default='leakyrelu_0.5', type=str)  
+    parser.add_argument('--latent_dim', default=10, type=int)
+    parser.add_argument('--input_shape', default='5,4', type=str)
+    parser.add_argument('--num_pid_classes', default=5, type=int)
+    parser.add_argument('--hidden_channels', default='30,30,30', type=str)  
+    parser.add_argument('--dropout', default=0.01, type=float)  
+    parser.add_argument('--activation', default='leakyrelu_0.1', type=str)  
     parser.add_argument('--n_run', type=int) 
     parser.add_argument('--gamma',default=1.,type=float,help='coefficient of clustering loss')
     parser.add_argument('--update_interval', default=1, type=int)
@@ -254,36 +259,50 @@ if __name__ == "__main__":
         
     args.activation = get_activation_func(args.activation)
 
-    DATA_PATH = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/autoencoder_for_anomaly/clustering/inputs/'
-    TRAIN_NAME = 'background_chan3_passed_ae_l1.h5'
+    DATA_PATH = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/autoencoder_for_anomaly/clustering/inputs/clustering_inputs/'
+    TRAIN_NAME = 'background_with_kl.h5'
     #TRAIN_NAME = 'bkg_l1_filtered_1mln.h5'
 
     filename_bg = DATA_PATH + TRAIN_NAME 
     in_file = h5py.File(filename_bg, 'r') 
-    #for 1mln dataset : 'process_ID', 'D_KL', 'event_ID', 'charge', 'E','pT','eta','phi']
-    #file_dataset = np.array(in_file['dataset'])[:,:,[0,2,4,5,6,7]] 
+    file_dataset = np.array(in_file['Particles_HLT'])
+    file_dataset = file_dataset[:,:,[0,1,2,4]] #removing charge for now
+    truth_dataset = np.array(in_file['PID'])
+    #remap particle id removing MET id = 1, need rewrite mapping in a better way
+    particle_id = file_dataset[:,:,[3]]
+    for p_id in [2,3,4,5]:
+        np.place(particle_id, particle_id==p_id, p_id-1)
 
-    file_dataset = np.array(in_file['dataset'])
+    #have to concatenate truth dataset to the file_dataset
+    file_dataset = np.concatenate([np.repeat(np.expand_dims(np.expand_dims(truth_dataset,axis=-1),axis=-1),file_dataset.shape[1],axis=1),
+                                    particle_id, #pid
+                                    file_dataset[:,:,0:3]], #pt,eta,phi
+                                    axis=-1)
+
+    random.shuffle(file_dataset)
+    file_dataset = file_dataset[:int(1e5)]
 
 
     prepared_dataset,datas =  data_proc.prepare_graph_datas(file_dataset,args.input_shape[0],n_top_proc = args.n_top_proc,connect_only_real=True)
+    print(np.unique(prepared_dataset[:,1:,1]),prepared_dataset[0,:,:])
 
-    pid_weight = data_proc.get_relative_weights(prepared_dataset[:,1:,1].reshape(prepared_dataset[:,1:,1].shape[0]*prepared_dataset[:,1:,1].shape[1]),mode='max')
-    #pid_weight = [1.,1.4,5.,5.]
+    pid_weight = data_proc.get_relative_weights(prepared_dataset[:,1:,1].reshape(-1),mode='max')
     pid_weight = torch.tensor(pid_weight).float().to(device)
+    print(prepared_dataset.shape,pid_weight,datas[0])
 
     train_test_split = 0.9
+    random.shuffle(datas)
+    datas = datas[:int(1e5)]
     train_len = int(len(datas)*train_test_split)
     test_len = len(datas)-train_len
-    random.shuffle(datas)
     train_dataset = GraphDataset(datas[0:train_len])
     test_dataset = GraphDataset(datas[train_len:])
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False,drop_last=True) #,num_workers=5
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False,drop_last=True) #,num_workers=5
 
     #this should be parametrizable 
-    pid_loss_weight = 0.1 #0.1
-    met_loss_weight = 2.0 #5
+    pid_loss_weight = 0.5 #0.1
+    met_loss_weight = 5.0 #5
 
     print(args)
     train_idec()

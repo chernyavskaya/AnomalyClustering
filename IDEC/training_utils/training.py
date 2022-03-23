@@ -142,8 +142,12 @@ def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight
         model.train()
 
     chamfer_loss_module = ChamferLossSplit()
-    #chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.num_pid_classes))
-    chamfer_loss_func = torch.nn.DataParallel(chamfer_loss_module, device_ids=[0, 1])
+    ###chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.num_pid_classes))
+    if device=='cpu':
+        chamfer_loss_func = chamfer_loss_split
+    else :
+        chamfer_loss_func = torch.nn.DataParallel(chamfer_loss_module, device_ids=[0, 1],output_device=device)
+
 
     total_loss, total_reco_loss, total_pid_loss, total_met_loss, total_reco_zero_loss = 0.,0.,0.,0.,0.
     t = tqdm.tqdm(enumerate(loader),total=len(loader))
@@ -173,14 +177,17 @@ def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight
         nll_loss = torch.nn.NLLLoss(reduction='mean',weight=pid_weight)
         pid_loss = categorical_loss(x[:,0],x_bar[:,0:model.num_pid_classes],xy_idx, yx_idx,nll_loss) #target, reco
         
+
         target_dense = to_dense_batch(x[:,1:], batch_index)[0]
         reco_dense = to_dense_batch(x_bar[:,model.num_pid_classes:], batch_index)[0]
         in_pid_dense = to_dense_batch(x[:,0], batch_index)[0]
         out_pid_dense = to_dense_batch(x_bar[:,0:model.num_pid_classes].argmax(1), batch_index)[0]
+        ###reco_loss, reco_zero_loss =  chamfer_loss_split(target_dense,reco_dense,in_pid_dense,out_pid_dense)
 
         res = chamfer_loss_func(target_dense,reco_dense,in_pid_dense,out_pid_dense)
-        res_gathered = torch.mean(torch.stack(res,dim=0),dim=1)
-        reco_loss,reco_zero_loss = res_gathered[0],res_gathered[1]
+        if device!='cpu':
+            res_gathered = torch.mean(torch.stack(res,dim=0),dim=1)
+            reco_loss,reco_zero_loss = res_gathered[0],res_gathered[1]
 
         loss = reco_loss +reco_zero_loss + pid_loss_weight*pid_loss + met_loss_weight*met_loss 
         total_loss += loss.item()
@@ -206,7 +213,7 @@ def train_test_idec_graph(model,loader,p_all,optimizer,device,gamma,pid_weight,p
 
     chamfer_loss_module = ChamferLossSplit()
     #chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.ae.num_pid_classes))
-    chamfer_loss_func = torch.nn.DataParallel(chamfer_loss_module, device_ids=[0, 1])
+    chamfer_loss_func = torch.nn.DataParallel(chamfer_loss_module, device_ids=[0, 1],output_device=device)
     
     total_loss, total_kl_loss,total_reco_loss, total_pid_loss, total_met_loss,total_reco_loss = 0., 0.,0.,0.,0.,0.
     t = tqdm.tqdm(enumerate(loader),total=len(loader))
@@ -283,15 +290,19 @@ def pretrain_ae_graph(model,train_loader,test_loader,optimizer,start_epoch,n_epo
             summary_writer.add_histogram(layer_name,weight, epoch)
             summary_writer.add_histogram(f'{layer_name}.grad',weight.grad, epoch)
 
-        if epoch>10 and test_loss < best_test_loss*1.01: #allow variation within 1%
+        if epoch>=10 and epoch%10==0:
+            checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
+            save_ckp(checkpoint, pretrain_path.replace('.pkl','_epoch_{}.pkl'.format(epoch+1)))
+            print('New checkpoint for epoch {} saved'.format(epoch+1))
+
+        if epoch>=10 and test_loss < best_test_loss*1.01: #allow variation within 1%
             best_test_loss = test_loss
             best_fpath = pretrain_path.replace(pretrain_path.rsplit('/', 1)[-1],'')+'best_model_AE.pkl'
             checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
             save_ckp(checkpoint, best_fpath)
             print('New best model saved')
-        if epoch>10 and epoch%10==0:
-            checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
-            save_ckp(checkpoint, pretrain_path.replace('.pkl','_epoch_{}.pkl'.format(epoch+1)))
+
+
 
     checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
     save_ckp(checkpoint, pretrain_path.replace('.pkl','_epoch_{}.pkl'.format(epoch+1)))

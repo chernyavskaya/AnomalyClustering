@@ -25,7 +25,7 @@ from torch.nn import ModuleList
 from torch.nn import Embedding
 from torch.autograd import Variable
 
-from torch_geometric.nn import Sequential, GCN, GCNConv, EdgeConv, GATConv, GATv2Conv, global_mean_pool, DynamicEdgeConv, BatchNorm
+from torch_geometric.nn import GCN, GCNConv, EdgeConv, GATConv, GATv2Conv, global_mean_pool, DynamicEdgeConv, BatchNorm
 from torch_geometric.utils import from_scipy_sparse_matrix, to_dense_batch
 from torch_scatter import scatter_mean,scatter_max
 
@@ -81,7 +81,7 @@ def load_IDEC(model_AE,dictionary, device, checkpoint_path=None ):
     return model
 
 
-class GraphAE(torch.nn.Module):
+class GraphAE(nn.Module):
   def __init__(self, input_shape, hidden_channels,latent_dim,activation=nn.LeakyReLU(negative_slope=0.1),dropout=0.05,input_shape_global = 2,num_pid_classes=4):
     super(GraphAE, self).__init__()
 
@@ -95,37 +95,43 @@ class GraphAE(torch.nn.Module):
     #self.batchnorm = nn.BatchNorm1d(input_shape[-1])
     self.num_fixed_nodes = input_shape[0]
     self.input_shape_global = input_shape_global
-    self.hidden_global = 4*input_shape_global
+    self.hidden_global = 50 #4*input_shape_global
     self.num_feats = input_shape[1]
     self.num_pid_classes = num_pid_classes #4
     self.idx_cat = [0] #only pid for now
     self.idx_cont =  np.delete(np.arange(self.num_feats), self.idx_cat)
-    self.energy_idx, self.pt_idx = 1,2
-    self.eta_idx, self.phi_idx = 3,4
+    self.energy_pt_idx = np.array([1]) #1,2
+    self.eta_idx, self.phi_idx = 2,3 #3,4
 
-    #self.emb_szs = [[5,2]]  #list of lists of embeddings (pid : 5->2, charge : 3->2)
-    #self.num_emb_feats = self.num_feats if len(self.idx_cat)==0 else self.num_feats - len(self.idx_cat) + sum(emb[-1] for emb in self.emb_szs)
-    ##EMBEDDING of categorical variables (pid, charge)
-    #self.embeddings = EmbeddingLayer(self.emb_szs)
+    self.emb_szs = [[num_pid_classes,num_pid_classes*3]]  #list of lists of embeddings (pid : 5->2, charge : 3->2)
+    self.num_emb_feats = self.num_feats if len(self.idx_cat)==0 else self.num_feats - len(self.idx_cat) + sum(emb[-1] for emb in self.emb_szs)
+    ##EMBEDDING of categorical variables (pid, charge, etc.)
+    self.embeddings = EmbeddingLayer(self.emb_szs)
+
 
     # ENCODER 
     self.enc_convs = ModuleList()  
     #self.enc_convs.append(layer(self.num_emb_feats, hidden_channels[0],activation=self.activation)) 
-    self.enc_convs.append(layer(self.num_feats, hidden_channels[0],**layer_kwargs))
+    self.enc_convs.append(layer(self.num_emb_feats, hidden_channels[0],**layer_kwargs))
     for i in range(0,len(hidden_channels)-1):
         self.enc_convs.append(layer(hidden_channels[i], hidden_channels[i+1],**layer_kwargs))
     self.num_enc_convs  = len(self.enc_convs)
     #scatter_mean from batch_size x num_fixed_nodes -> batch_size
-    self.enc_fc1 = torch.nn.Linear(2*hidden_channels[-1], hidden_channels[-1]) 
-    self.enc_met_fc1 = torch.nn.Linear(self.input_shape_global, self.hidden_global)  
-    self.enc_fc2 = torch.nn.Linear(hidden_channels[-1]+self.hidden_global, latent_dim) 
+    self.enc_fc1 = Linear(2*hidden_channels[-1], hidden_channels[-1]) 
+    self.enc_met_fc1 = nn.Sequential(Linear(self.input_shape_global, self.hidden_global),  #MLP for met
+                                  self.activation,
+                                  Linear(self.hidden_global, self.hidden_global))
+    self.enc_fc2 = Linear(hidden_channels[-1]+self.hidden_global, latent_dim) 
 
     # DECODER
-    self.dec_fc1 = torch.nn.Linear(latent_dim, 2*latent_dim+self.hidden_global)
-    self.dec_met_fc1 = torch.nn.Linear(self.hidden_global, self.input_shape_global)
-    self.dec_fc2 = torch.nn.Linear(2*latent_dim, 2*latent_dim*self.num_fixed_nodes) #to map from tiled (batch_size x num_fixed_nodes) x latent space to a more meaningful weights between the nodes 
+    self.dec_fc1 = Linear(latent_dim, 2*latent_dim+self.hidden_global)
+    self.dec_met_fc1 = nn.Sequential(Linear(self.hidden_global,self.hidden_global),
+                                  self.activation,
+                                  Linear(self.hidden_global,self.input_shape_global))
+
+    self.dec_fc2 = Linear(2*latent_dim, 2*latent_dim*self.num_fixed_nodes) #to map from tiled (batch_size x num_fixed_nodes) x latent space to a more meaningful weights between the nodes 
     #upsample from batch_size -> batch_size x num_fixed_nodes 
-    #self.dec_fc1 = torch.nn.Linear(latent_dim, latent_dim) #to map from tiled (batch_size x num_fixed_nodes) x latent space to a more meaningful weights between the nodes 
+    #self.dec_fc1 = nn.Linear(latent_dim, latent_dim) #to map from tiled (batch_size x num_fixed_nodes) x latent space to a more meaningful weights between the nodes 
     #self.dec_fc2 = torch.nn.Linear(latent_dim, 2*latent_dim)
 
     #reshape 
@@ -142,6 +148,13 @@ class GraphAE(torch.nn.Module):
 
   def encode(self, data):
     x,x_met,edge_index, batch_index = data.x,data.x_met.reshape((-1,self.input_shape_global)), data.edge_index, data.batch
+
+   #create learnable embedding of categorical variables
+    if len(self.idx_cat) > 0:
+        x_cat = x[:,self.idx_cat]
+        x_cont = x[:,self.idx_cont]
+        x_cat = self.embeddings(x_cat.long())  #long to ensure that variable is categorical
+        x = torch.cat([x_cat, x_cont], -1) 
 
     #Treat global graph features 
     x_met = self.enc_met_fc1(x_met)
@@ -170,8 +183,8 @@ class GraphAE(torch.nn.Module):
     x_met = self.dec_met_fc1(x_met)
     x_met_energy = F.relu(x_met[:,0:1]) #energy
     x_met_phi = x_met[:,1:]
-    x_met_phi = cycle_by_2pi(x_met_phi) #somehow removing cycling and/or adding tanh lead to met loss being very high at start..
-    #x_met_phi = PI*torch.tanh(x_met_phi) #phi
+    #x_met_phi = cycle_by_2pi(x_met_phi) 
+    x_met_phi = PI*torch.tanh(x_met_phi) #phi
     x_met = torch.cat([x_met_energy,x_met_phi], dim=-1) 
 
     x = encoded_x[:,self.hidden_global:]
@@ -180,11 +193,13 @@ class GraphAE(torch.nn.Module):
     x = self.activation(x)
     batch_size = x.shape[0]
     layer_size = x.shape[-1]
-    ###### permutation of graph nodes 
-    x = torch.reshape(x,(batch_size,self.num_fixed_nodes, int(layer_size/self.num_fixed_nodes)))
-    idx = torch.randint(self.num_fixed_nodes, size=(batch_size, self.num_fixed_nodes)).to(x.get_device())
-    x = x.gather(dim=1, index=idx.unsqueeze(-1).expand(x.shape))
+    ###### reshape to graph 
     x = torch.reshape(x,(batch_size*self.num_fixed_nodes, int(layer_size/self.num_fixed_nodes)))
+    ###### permutation of graph nodes 
+    #x = torch.reshape(x,(batch_size,self.num_fixed_nodes, int(layer_size/self.num_fixed_nodes)))
+    #idx = torch.randint(self.num_fixed_nodes, size=(batch_size, self.num_fixed_nodes)).to(x.get_device())
+    #x = x.gather(dim=1, index=idx.unsqueeze(-1).expand(x.shape))
+    #x = torch.reshape(x,(batch_size*self.num_fixed_nodes, int(layer_size/self.num_fixed_nodes)))
     ######
     for i_layer in range(self.num_dec_convs):
         x = self.dec_convs[i_layer](x,edge_index)
@@ -194,8 +209,8 @@ class GraphAE(torch.nn.Module):
 
     x_eta = x[:,[self.num_pid_classes-1+self.eta_idx]]
     x_phi =  x[:,[self.num_pid_classes-1+self.phi_idx]]
-    x_energy_pt = x[:,[self.num_pid_classes-1+self.energy_idx,self.num_pid_classes-1+self.pt_idx]]
-    x_phi = cycle_by_2pi(x_phi)
+    x_energy_pt = x[:,self.num_pid_classes-1+self.energy_pt_idx]
+    #x_phi = cycle_by_2pi(x_phi)
     x_phi = PI*torch.tanh(x_phi)
     x_eta = 2.8*torch.tanh(x_eta) # have a symmetric activation function that eventually dies out. 
 
@@ -213,7 +228,7 @@ class GraphAE(torch.nn.Module):
     return x_bar,x_met_bar, z
 
 
-class DenseAE(torch.nn.Module):
+class DenseAE(nn.Module):
   def __init__(self, input_shape, hidden_channels,latent_dim,activation=nn.LeakyReLU(negative_slope=0.5),dropout=0.05):
     super(DenseAE, self).__init__()
 
@@ -322,7 +337,7 @@ class IDEC(nn.Module):
         self.ae.to(self.device)
         # cluster layer
         self.cluster_layer = Parameter(torch.Tensor(n_clusters, self.latent_dim))
-        torch.nn.init.xavier_normal_(self.cluster_layer.data)
+        nn.init.xavier_normal_(self.cluster_layer.data)
 
 
     def forward(self, data):

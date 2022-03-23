@@ -93,12 +93,12 @@ def proprocess_e_pt(file_dataset, idx=[2,3], scale=1.e5,log=True):
         file_dataset[:,:,idx] = file_dataset[:,:,idx]/scale 
         #log of energy and pt as preprocessing
         if log==True:
-            file_dataset[:,:,idx] = 3*np.log(file_dataset[:,:,idx]+1)
+            file_dataset[:,:,idx] = np.log(file_dataset[:,:,idx]+1)
     elif len(file_dataset.shape)==2:
         file_dataset[:,idx] = file_dataset[:,idx]/scale 
         #log of energy and pt as preprocessing
         if log==True:
-            file_dataset[:,idx] = 3*np.log(file_dataset[:,idx]+1)
+            file_dataset[:,idx] = np.log(file_dataset[:,idx]+1)
     return file_dataset
 
 def select_top_n_procs(file_dataset_proc,n_proc):
@@ -161,7 +161,8 @@ def prepare_1d_datasets(file_dataset,n_top_proc = -1):
 def prepare_graph_datas(file_dataset,n_particles,n_top_proc = -1,connect_only_real=True):
     print('Preparing dataset, check that the feature indexing corresponds to your dataset!')
     datas = []
-    file_dataset = proprocess_e_pt(file_dataset,idx=[2,3],scale=1e5,log=True)
+    #file_dataset = proprocess_e_pt(file_dataset,idx=[2,3],scale=1e5,log=True) #idx=[2,3]
+    file_dataset = proprocess_e_pt(file_dataset,idx=[2],scale=1.,log=True) #idx=[1]
 
     if n_top_proc > 0:
         top_proc_mask =  select_top_n_procs(file_dataset[:,0,0],n_top_proc)
@@ -183,7 +184,8 @@ def prepare_graph_datas(file_dataset,n_particles,n_top_proc = -1,connect_only_re
 
     x = [torch.tensor(file_dataset[i_evt,1:,1:], dtype=torch.float) for i_evt in range(tot_evt)]
     y = [torch.tensor(int(file_dataset[i_evt,0,0]), dtype=torch.int) for i_evt in range(tot_evt)]
-    x_met = [torch.tensor(file_dataset[i_evt,0,[2,5]], dtype=torch.float) for i_evt in range(tot_evt)]
+    #x_met = [torch.tensor(file_dataset[i_evt,0,[2,5]], dtype=torch.float) for i_evt in range(tot_evt)]
+    x_met = [torch.tensor(file_dataset[i_evt,0,[2,4]], dtype=torch.float) for i_evt in range(tot_evt)]
     datas = [Data(x=x_event, edge_index=edge_index_event,y=torch.unsqueeze(y_event, 0),x_met=x_met_event) 
     for x_event,edge_index_event,y_event,x_met_event in zip(x,edge_index,y,x_met)]
     print('Dataset of {} events prepared'.format(tot_evt))
