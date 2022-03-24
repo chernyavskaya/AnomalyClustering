@@ -117,7 +117,8 @@ class GraphAE(nn.Module):
         self.enc_convs.append(layer(hidden_channels[i], hidden_channels[i+1],**layer_kwargs))
     self.num_enc_convs  = len(self.enc_convs)
     #scatter_mean from batch_size x num_fixed_nodes -> batch_size
-    self.enc_fc1 = Linear(2*hidden_channels[-1], hidden_channels[-1]) 
+    #self.enc_fc1 = Linear(2*hidden_channels[-1], hidden_channels[-1]) 
+    self.enc_fc1 = Linear(hidden_channels[-1], hidden_channels[-1]) 
     self.enc_met_fc1 = nn.Sequential(Linear(self.input_shape_global, self.hidden_global),  #MLP for met
                                   self.activation,
                                   Linear(self.hidden_global, self.hidden_global))
@@ -164,9 +165,10 @@ class GraphAE(nn.Module):
     for i_layer in range(self.num_enc_convs):
         x = self.enc_convs[i_layer](x,edge_index)
     #reduce from all the nodes in the graph to 1 per graph
-    x_mean = scatter_mean(x, batch_index, dim=0)
-    x_max = scatter_max(x, batch_index, dim=0)[0]
-    x = torch.cat((x_mean, x_max), dim=1)
+    x = scatter_mean(x, batch_index, dim=0)
+    #x_mean = scatter_mean(x, batch_index, dim=0)
+    #x_max = scatter_max(x, batch_index, dim=0)[0]
+    #x = torch.cat((x_mean, x_max), dim=1) #maybe mean is enough
     x = self.enc_fc1(x)
     x = self.activation(x)
 

@@ -212,9 +212,14 @@ def train_test_idec_graph(model,loader,p_all,optimizer,device,gamma,pid_weight,p
         model.train()
 
     chamfer_loss_module = ChamferLossSplit()
-    #chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.ae.num_pid_classes))
-    chamfer_loss_func = torch.nn.DataParallel(chamfer_loss_module, device_ids=[0, 1],output_device=device)
-    
+    ###chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.num_pid_classes))
+    if device=='cpu':
+        chamfer_loss_func = chamfer_loss_split
+    else :
+        chamfer_loss_func = torch.nn.DataParallel(chamfer_loss_module, device_ids=[0, 1],output_device=device)
+
+
+
     total_loss, total_kl_loss,total_reco_loss, total_pid_loss, total_met_loss,total_reco_loss = 0., 0.,0.,0.,0.,0.
     t = tqdm.tqdm(enumerate(loader),total=len(loader))
     for i, data in t:
@@ -245,8 +250,10 @@ def train_test_idec_graph(model,loader,p_all,optimizer,device,gamma,pid_weight,p
         out_pid_dense = to_dense_batch(x_bar[:,0:model.ae.num_pid_classes].argmax(1), batch_index)[0]
 
         res = chamfer_loss_func(target_dense,reco_dense,in_pid_dense,out_pid_dense)
-        res_gathered = torch.mean(torch.stack(res,dim=0),dim=1)
-        reco_loss,reco_zero_loss = res_gathered[0],res_gathered[1]
+        if device!='cpu':
+            res_gathered = torch.mean(torch.stack(res,dim=0),dim=1)
+            reco_loss,reco_zero_loss = res_gathered[0],res_gathered[1]
+
 
         #kl_loss = F.kl_div(q.log(), Variable(p_all[i],requires_grad=True).log(),log_target=True,reduction='batchmean') 
         kl_loss = F.kl_div(q.log(), Variable(p_a,requires_grad=True).log(),log_target=True,reduction='batchmean') 

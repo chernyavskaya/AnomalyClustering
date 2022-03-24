@@ -41,8 +41,8 @@ import training_utils.model_summary as summary
 from torch.utils.tensorboard import SummaryWriter
 import multiprocessing as mp
 
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-#device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+#device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
 #device = torch.device('cpu')
 
 
@@ -133,13 +133,13 @@ def train_idec():
 
             #p_all = torch.zeros((len(train_loader),args.batch_size,args.n_clusters),device=device)
             p_all = []
-            for i, data in enumerate(train_loader):
-                data = data.to(device)
+            #for i, data in enumerate(train_loader):
+            #    data = data.to(device)
 
-                _,_, tmp_q_i, _ = model(data)
-                tmp_q_i = tmp_q_i.data
-                #p_all[i] = target_distribution(tmp_q_i)
-                p_all.append(target_distribution(tmp_q_i))
+            #    _,_, tmp_q_i, _ = model(data)
+            #    tmp_q_i = tmp_q_i.data
+            #    #p_all[i] = target_distribution(tmp_q_i)
+            #    p_all.append(target_distribution(tmp_q_i))
 
 
             pred_labels = np.array([model.forward(data.to(device))[2].data.cpu().numpy().argmax(1) for i,data in enumerate(train_loader)]) #argmax(1) ##index (cluster nubmber) of the cluster with the highest probability q.
@@ -220,12 +220,12 @@ if __name__ == "__main__":
         description='train',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-    parser.add_argument('--n_top_proc', type=int, default=3)
+    parser.add_argument('--n_top_proc', type=int, default=6)
     parser.add_argument('--retrain_ae', type=int, default=1)
     parser.add_argument('--load_ae', type=str, default='')
     parser.add_argument('--load_idec', type=str, default='')
     parser.add_argument('--lr', type=float, default=0.005)
-    parser.add_argument('--n_clusters', default=3, type=int)
+    parser.add_argument('--n_clusters', default=6, type=int)
     parser.add_argument('--batch_size', default=256, type=int)
     parser.add_argument('--latent_dim', default=10, type=int)
     parser.add_argument('--input_shape', default='5,4', type=str)
@@ -280,11 +280,10 @@ if __name__ == "__main__":
                                     axis=-1)
 
     random.shuffle(file_dataset)
-    file_dataset = file_dataset[:int(1e5)]
+    #file_dataset = file_dataset[:int(1e5)]
 
 
     prepared_dataset,datas =  data_proc.prepare_graph_datas(file_dataset,args.input_shape[0],n_top_proc = args.n_top_proc,connect_only_real=True)
-    print(np.unique(prepared_dataset[:,1:,1]),prepared_dataset[0,:,:])
 
     pid_weight = data_proc.get_relative_weights(prepared_dataset[:,1:,1].reshape(-1),mode='max')
     pid_weight = torch.tensor(pid_weight).float().to(device)
@@ -292,7 +291,7 @@ if __name__ == "__main__":
 
     train_test_split = 0.9
     random.shuffle(datas)
-    datas = datas[:int(1e5)]
+    #datas = datas[:int(1e5)]
     train_len = int(len(datas)*train_test_split)
     test_len = len(datas)-train_len
     train_dataset = GraphDataset(datas[0:train_len])
