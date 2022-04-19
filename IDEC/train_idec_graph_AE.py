@@ -41,8 +41,8 @@ import training_utils.model_summary as summary
 from torch.utils.tensorboard import SummaryWriter
 import multiprocessing as mp
 
-#device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+#device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
 #device = torch.device('cpu')
 
 
@@ -220,7 +220,9 @@ if __name__ == "__main__":
         description='train',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-    parser.add_argument('--n_top_proc', type=int, default=6)
+    parser.add_argument('--n_top_proc_bg', type=int, default=-1)
+    parser.add_argument('--signals', type=str, default='Ato4l,hChToTauNu,hToTauTau,LQ')
+    parser.add_argument('--frac_sig', type=float,default=0.01)
     parser.add_argument('--retrain_ae', type=int, default=1)
     parser.add_argument('--load_ae', type=str, default='')
     parser.add_argument('--load_idec', type=str, default='')
@@ -246,6 +248,7 @@ if __name__ == "__main__":
         exit()
     args.hidden_channels = [int(s) for s in args.hidden_channels.replace(' ','').split(',')]
     args.input_shape = [int(s) for s in args.input_shape.replace(' ','').split(',')]
+    args.signals = [s for s in args.signals.replace(' ','').split(',')]
     base_output_path = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/autoencoder_for_anomaly/clustering/trained_output/graph/'
     output_path = base_output_path+'run_{}/'.format(args.n_run)
     pathlib.Path(output_path).mkdir(parents=True, exist_ok=True)
@@ -260,34 +263,52 @@ if __name__ == "__main__":
     args.activation = get_activation_func(args.activation)
 
     DATA_PATH = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/autoencoder_for_anomaly/clustering/inputs/clustering_inputs/'
-    TRAIN_NAME = 'background_with_kl.h5'
-    #TRAIN_NAME = 'bkg_l1_filtered_1mln.h5'
+    BG_NAMES = ['background']
 
-    filename_bg = DATA_PATH + TRAIN_NAME 
-    in_file = h5py.File(filename_bg, 'r') 
-    file_dataset = np.array(in_file['Particles_HLT'])
-    file_dataset = file_dataset[:,:,[0,1,2,4]] #removing charge for now
-    truth_dataset = np.array(in_file['PID'])
-    #remap particle id removing MET id = 1, need rewrite mapping in a better way
-    particle_id = file_dataset[:,:,[3]]
-    for p_id in [2,3,4,5]:
-        np.place(particle_id, particle_id==p_id, p_id-1)
+    file_datasets = []
+    tot_bg = 0
+    for NAME in BG_NAMES+args.signals:
+        if 'background' in NAME:
+            NAME_file = NAME+'_with_kl.h5'   
+        else:
+            NAME_file = NAME+'_13TeV_PU50_with_kl.h5'
 
-    #have to concatenate truth dataset to the file_dataset
-    file_dataset = np.concatenate([np.repeat(np.expand_dims(np.expand_dims(truth_dataset,axis=-1),axis=-1),file_dataset.shape[1],axis=1),
+        filename = DATA_PATH + NAME_file 
+        in_file = h5py.File(filename, 'r') 
+        file_dataset = np.array(in_file['Particles_HLT'])
+        file_dataset = file_dataset[:,:,[0,1,2,4]] #removing charge for now
+        if 'background' in NAME:
+            truth_dataset = np.array(in_file['PID'])
+        else:
+            truth_dataset =  np.ones(file_dataset[:,:,0].shape[0])
+            truth_dataset.fill(data_proc.inverse_dict_map(data_proc.process_name_dict)[NAME])
+        particle_id = file_dataset[:,:,[3]]
+        for p_id in [2,3,4,5]:
+            np.place(particle_id, particle_id==p_id, p_id-1)
+
+        #have to concatenate truth dataset to the file_dataset
+        file_dataset = np.concatenate([np.repeat(np.expand_dims(np.expand_dims(truth_dataset,axis=-1),axis=-1),
+                                    file_dataset.shape[1],axis=1),
                                     particle_id, #pid
                                     file_dataset[:,:,0:3]], #pt,eta,phi
                                     axis=-1)
 
-    random.shuffle(file_dataset)
-    #file_dataset = file_dataset[:int(1e5)]
+        random.shuffle(file_dataset)
+        if 'background' in NAME:
+            top_proc_mask =  data_proc.select_top_n_procs(file_dataset[:,0,0],n_top_proc=args.n_top_proc_bg)
+            file_dataset = file_dataset[top_proc_mask]
+            tot_bg = file_dataset.shape[0]
+        else:
+            tot_sig = file_dataset.shape[0]
+            sig_events = int(args.frac_sig*tot_bg)
+            file_dataset = file_dataset[:sig_events if sig_events<tot_sig else tot_sig]
+        file_datasets.append(file_dataset)
+    file_dataset = np.concatenate(file_datasets,axis=0)
 
-
-    prepared_dataset,datas =  data_proc.prepare_graph_datas(file_dataset,args.input_shape[0],n_top_proc = args.n_top_proc,connect_only_real=True)
+    prepared_dataset,datas =  data_proc.prepare_graph_datas(file_dataset,args.input_shape[0],n_top_proc = -1,connect_only_real=True)
 
     pid_weight = data_proc.get_relative_weights(prepared_dataset[:,1:,1].reshape(-1),mode='max')
     pid_weight = torch.tensor(pid_weight).float().to(device)
-    print(prepared_dataset.shape,pid_weight,datas[0])
 
     train_test_split = 0.9
     random.shuffle(datas)

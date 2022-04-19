@@ -101,11 +101,11 @@ def proprocess_e_pt(file_dataset, idx=[2,3], scale=1.e5,log=True):
             file_dataset[:,idx] = np.log(file_dataset[:,idx]+1)
     return file_dataset
 
-def select_top_n_procs(file_dataset_proc,n_proc):
+def select_top_n_procs(file_dataset_proc,n_top_proc):
     #Select top N processes only :
     (unique, counts) = np.unique(file_dataset_proc, return_counts=True)
     procs_sorted, counts_sorted = zip(*sorted(zip(unique, counts), key=lambda x: x[1],reverse=True))
-    top_proc_mask = np.isin(file_dataset_proc, procs_sorted[:n_proc])
+    top_proc_mask = np.isin(file_dataset_proc, procs_sorted[:n_top_proc])
     return top_proc_mask
 
 def prepare_1d_reduced_datasets(file_dataset,n_top_proc = -1):
@@ -193,5 +193,20 @@ def prepare_graph_datas(file_dataset,n_particles,n_top_proc = -1,connect_only_re
 
 
 
-
+process_name_dict = {0: 'WW_13TeV_50PU',
+                    1: 'WZ_13TeV_50PU',
+                    2: 'ZZ_13TeV_50PU',
+                    3: 'qcd_13TeV_50PU',
+                    4: 'ttbar_13TeV_50PU',
+                    5: 'Zjets_13TeV_50PU',
+                    6: 'gammajets_13TeV_50PU',
+                    7: 'Wjets_13TeV_50PU',
+                    30: 'Ato4l',
+                    31: 'hChToTauNu',
+                    32: 'hToTauTau',
+                    33: 'LQ'
+                    }
+                    
+def inverse_dict_map(f):
+    return f.__class__(map(reversed, f.items()))
 

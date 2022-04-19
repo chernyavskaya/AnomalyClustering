@@ -196,12 +196,15 @@ class GraphAE(nn.Module):
     batch_size = x.shape[0]
     layer_size = x.shape[-1]
     ###### reshape to graph 
-    x = torch.reshape(x,(batch_size*self.num_fixed_nodes, int(layer_size/self.num_fixed_nodes)))
-    ###### permutation of graph nodes 
-    #x = torch.reshape(x,(batch_size,self.num_fixed_nodes, int(layer_size/self.num_fixed_nodes)))
-    #idx = torch.randint(self.num_fixed_nodes, size=(batch_size, self.num_fixed_nodes)).to(x.get_device())
-    #x = x.gather(dim=1, index=idx.unsqueeze(-1).expand(x.shape))
     #x = torch.reshape(x,(batch_size*self.num_fixed_nodes, int(layer_size/self.num_fixed_nodes)))
+    ###### permutation of graph nodes during training
+    if self.training: 
+        x = torch.reshape(x,(batch_size,self.num_fixed_nodes, int(layer_size/self.num_fixed_nodes)))
+        idx = torch.randint(self.num_fixed_nodes, size=(batch_size, self.num_fixed_nodes)).to(x.device)
+        x = x.gather(dim=1, index=idx.unsqueeze(-1).expand(x.shape))
+        x = torch.reshape(x,(batch_size*self.num_fixed_nodes, int(layer_size/self.num_fixed_nodes)))
+    else:
+        x = torch.reshape(x,(batch_size*self.num_fixed_nodes, int(layer_size/self.num_fixed_nodes)))
     ######
     for i_layer in range(self.num_dec_convs):
         x = self.dec_convs[i_layer](x,edge_index)
