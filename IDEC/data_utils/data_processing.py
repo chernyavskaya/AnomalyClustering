@@ -6,6 +6,7 @@ from torch_geometric.data import Dataset as PyGDataset
 from torch_geometric.data import Data
 from torch_geometric.utils import from_scipy_sparse_matrix, to_dense_batch
 from scipy.sparse import csr_matrix
+import random
 
 def load_mnist(path='../data/mnist.npz'):
 
@@ -185,11 +186,34 @@ def prepare_graph_datas(file_dataset,n_particles,n_top_proc = -1,connect_only_re
     x = [torch.tensor(file_dataset[i_evt,1:,1:], dtype=torch.float) for i_evt in range(tot_evt)]
     y = [torch.tensor(int(file_dataset[i_evt,0,0]), dtype=torch.int) for i_evt in range(tot_evt)]
     #x_met = [torch.tensor(file_dataset[i_evt,0,[2,5]], dtype=torch.float) for i_evt in range(tot_evt)]
-    x_met = [torch.tensor(file_dataset[i_evt,0,[2,4]], dtype=torch.float) for i_evt in range(tot_evt)]
+    x_met = [torch.tensor(file_dataset[i_evt,0,[2,4,5]], dtype=torch.float) for i_evt in range(tot_evt)]
     datas = [Data(x=x_event, edge_index=edge_index_event,y=torch.unsqueeze(y_event, 0),x_met=x_met_event) 
     for x_event,edge_index_event,y_event,x_met_event in zip(x,edge_index,y,x_met)]
     print('Dataset of {} events prepared'.format(tot_evt))
     return file_dataset,datas
+
+
+def prepare_ad_event_based_dataset(file_dataset,tot_evt,shuffle=True):
+    file_dataset = file_dataset[:int(tot_evt),:,] #removing pid to add it later
+
+    truth_dataset =  np.ones(file_dataset[:,:,0].shape[0])
+    particle_id = file_dataset[:,:,[3]]
+    for p_id in [2,3,4]:
+        np.place(particle_id, particle_id==p_id, p_id-1)
+    phi_cos = np.where(file_dataset[:,:,[2]]!=0,np.cos(file_dataset[:,:,[2]]),0)
+    phi_sin = np.sin(file_dataset[:,:,[2]])
+
+    #have to concatenate truth dataset to the file_dataset
+    file_dataset = np.concatenate([np.repeat(np.expand_dims(np.expand_dims(truth_dataset,axis=-1),axis=-1),
+                                    file_dataset.shape[1],axis=1),
+                                    particle_id, #pid
+                                    file_dataset[:,:,0:2], #pt,eta
+                                    phi_cos,
+                                    phi_sin],
+                                    axis=-1)
+    if shuffle:
+        random.shuffle(file_dataset)
+    return file_dataset
 
 
 

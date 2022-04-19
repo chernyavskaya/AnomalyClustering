@@ -49,7 +49,7 @@ def load_GraphAE(dictionary, device, checkpoint_path=None ):
                     activation=activation,
                     dropout=dictionary['dropout'],
                     num_pid_classes=dictionary['num_pid_classes'],
-                    input_shape_global = 2)
+                    input_shape_global = 3)
     if checkpoint_path!=None:
         model, _, _, _, _,_ = load_ckp(checkpoint_path, model, None, None)
     model.to(device)
@@ -82,7 +82,7 @@ def load_IDEC(model_AE,dictionary, device, checkpoint_path=None ):
 
 
 class GraphAE(nn.Module):
-  def __init__(self, input_shape, hidden_channels,latent_dim,activation=nn.LeakyReLU(negative_slope=0.1),dropout=0.05,input_shape_global = 2,num_pid_classes=4):
+  def __init__(self, input_shape, hidden_channels,latent_dim,activation=nn.LeakyReLU(negative_slope=0.1),dropout=0.05,input_shape_global = 3,num_pid_classes=4):
     super(GraphAE, self).__init__()
 
     #Which main block to use for the architecture
@@ -101,7 +101,7 @@ class GraphAE(nn.Module):
     self.idx_cat = [0] #only pid for now
     self.idx_cont =  np.delete(np.arange(self.num_feats), self.idx_cat)
     self.energy_pt_idx = np.array([1]) #1,2
-    self.eta_idx, self.phi_idx = 2,3 #3,4
+    self.eta_idx, self.phi_idx = np.array([2]),np.array([3,4]) #3,4
 
     self.emb_szs = [[num_pid_classes,num_pid_classes*3]]  #list of lists of embeddings (pid : 5->2, charge : 3->2)
     self.num_emb_feats = self.num_feats if len(self.idx_cat)==0 else self.num_feats - len(self.idx_cat) + sum(emb[-1] for emb in self.emb_szs)
@@ -186,7 +186,8 @@ class GraphAE(nn.Module):
     x_met_energy = F.relu(x_met[:,0:1]) #energy
     x_met_phi = x_met[:,1:]
     #x_met_phi = cycle_by_2pi(x_met_phi) 
-    x_met_phi = PI*torch.tanh(x_met_phi) #phi
+    #x_met_phi = PI*torch.tanh(x_met_phi) #phi
+    #x_met_phi = torch.tanh(x_met_phi) #phi
     x_met = torch.cat([x_met_energy,x_met_phi], dim=-1) 
 
     x = encoded_x[:,self.hidden_global:]
@@ -212,12 +213,15 @@ class GraphAE(nn.Module):
     log_soft_max = nn.LogSoftmax(dim=-1)
     x_cat = log_soft_max(x_cat)
 
-    x_eta = x[:,[self.num_pid_classes-1+self.eta_idx]]
-    x_phi =  x[:,[self.num_pid_classes-1+self.phi_idx]]
+    x_eta = x[:,self.num_pid_classes-1+self.eta_idx]
+    x_phi =  x[:,self.num_pid_classes-1+self.phi_idx]
     x_energy_pt = x[:,self.num_pid_classes-1+self.energy_pt_idx]
     #x_phi = cycle_by_2pi(x_phi)
-    x_phi = PI*torch.tanh(x_phi)
-    x_eta = 2.8*torch.tanh(x_eta) # have a symmetric activation function that eventually dies out. 
+    #x_phi = PI*torch.tanh(x_phi)
+    #x_phi = torch.tanh(x_phi)
+    #x_eta = 2.8*torch.tanh(x_eta) # have a symmetric activation function that eventually dies out. 
+    #x_eta = 4.*torch.tanh(x_eta) # have a symmetric activation function that eventually dies out. 
+
 
     x_energy_pt = F.relu(x_energy_pt)
     #x_energy_pt = F.leaky_relu(x_energy_pt, negative_slope=0.1)
