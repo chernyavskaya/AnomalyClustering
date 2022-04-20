@@ -34,21 +34,24 @@ def huber_mask(inputs, outputs,delta=5.):
 
 
 class ChamferLossSplit(torch.nn.Module):
-    def __init__(self) :
+    def __init__(self,reduction='mean') :
         super(ChamferLossSplit, self).__init__()
+        self.reduction = reduction
     def forward(self, target, reco, in_pid, out_pid):
-        return chamfer_loss_split(target, reco, in_pid, out_pid)
+        return chamfer_loss_split(target, reco, in_pid, out_pid,reduction=self.reduction)
 
-def chamfer_loss_split(target, reco, in_pid, out_pid):
+def chamfer_loss_split(target, reco, in_pid, out_pid,reduction='mean'):
     ''' Chamfer loss split into two parts : non-zero particles and zero-particles
         input : target, reco, in_pid, out_pid
         output : chamfer loss for non-zero particles, chamfer loss for zero-particles    
     '''
     n_batches = 0 #number of events in a sub-batch (sub if multigpu are used)
-    eucl_non_zero = 0.
-    eucl_zero = 0.
+    tot_eucl_non_zero = []
+    tot_eucl_zero = []
     #256 x 17 x 4 -> numpy , paralilize it 
     for ib in range(target.shape[0]):
+        eucl_non_zero = 0.
+        eucl_zero = 0.
         x_ib = target[ib].to(target.device)
         y_ib = reco[ib].to(target.device)
         #construct masks here based on pid 
@@ -73,13 +76,16 @@ def chamfer_loss_split(target, reco, in_pid, out_pid):
         y_zero = y_ib[~output_non_zeros_mask].to(target.device)
         n_out_zero_part = max(1,y_zero.shape[0])
         eucl_zero += torch.sum(torch.norm(y_zero,dim=-1,p=2))/n_out_zero_part
-
+        tot_eucl_non_zero.append(eucl_non_zero)
+        tot_eucl_zero.append(eucl_zero)
         n_batches+=1
         
-    eucl_non_zero /= n_batches  
-    eucl_zero /= n_batches
-
-    return  eucl_non_zero,eucl_zero
+    if reduction=='mean':
+        return (np.sum(torch.stack(tot_eucl_non_zero))/n_batches), (np.sum(torch.stack(tot_eucl_zero))/n_batches)
+    elif reduction=='sum':
+        return (np.sum(torch.stack(tot_eucl_non_zero))), (np.sum(torch.stack(tot_eucl_zero)))
+    else :
+        return torch.stack(tot_eucl_non_zero),torch.stack(tot_eucl_zero)
 
 class ChamferLossSplitPID(torch.nn.Module):
     def __init__(self,pids) :
@@ -131,10 +137,21 @@ def chamfer_loss_split_pid(target, reco, in_pid, out_pid, pids):
     return torch.sum(eucl_losses[1:]),eucl_losses[0]
 
 
-def chamfer_loss(target, reco, batch):
+def chamfer_loss_numpy(target, reco):
+    ''' Simple symmetric Chamfer loss with numpy '''
+    distances = np.sum(np.subtract(target[:,:,np.newaxis,:],reco[:,np.newaxis,:,:])**2, axis=-1)
+    idx_min_dist_to_inputs = np.argmin(distances,axis=1)
+    idx_min_dist_to_outputs = np.argmin(distances,axis=2)
+    min_dist_to_inputs = distances[idx_min_dist_to_inputs]
+    min_dist_to_outputs = distances[idx_min_dist_to_outputs]
+
+    eucl = np.sum(min_dist_to_inputs,axis=1) + np.sum(min_dist_to_outputs,axis=1)
+    return eucl, idx_min_dist_to_outputs, idx_min_dist_to_inputs
+
+
+def chamfer_loss(target, reco, batch,reduction='sum'):
     x = to_dense_batch(target, batch)[0]
     y = to_dense_batch(reco, batch)[0] 
-    #dist = pairwise_distance(x,y)
     diff = pairwise_distance(x,y)
 
     dist = torch.norm(diff, dim=-1,p=2) #x1 - y1 + eps
@@ -142,7 +159,12 @@ def chamfer_loss(target, reco, batch):
     # For every output value, find its closest input value; for every input value, find its closest output value.
     min_dist_xy = torch.min(dist, dim = -1)  # Get min distance per row - Find the closest input to the output
     min_dist_yx = torch.min(dist, dim = -2)  # Get min distance per column - Find the closest output to the input
-    eucl =  1./2*torch.sum(min_dist_xy.values + min_dist_yx.values)
+    if reduction=='sum' :
+        eucl =  1./2*torch.sum(min_dist_xy.values + min_dist_yx.values)
+    elif reduction=='mean' :
+        eucl =  1./2*torch.mean(min_dist_xy.values + min_dist_yx.values)
+    elif reduction=='none' :
+        eucl =  1./2*(min_dist_xy.values + min_dist_yx.values)
 
     batch_size = x.shape[0]
     num_particles = x.shape[1]
@@ -208,17 +230,36 @@ class CustomHuberLoss:
         res = (0.5 * mask * (torch.pow(errors,2))) + ~mask *(self.delta*(errors-0.5*self.delta))
         if self.reduction=='mean':
             return torch.mean(res)
-        else:
+        elif self.reduction=='sum':
             return torch.sum(res)
+        elif self.reduction=='none':
+            return res
 
-def global_met_loss(target, reco):
-    #this custom class is not needed anymore, we can just use directly Huber. it was needed for applying cyclic operation on delta phi
+    def call_numpy(self,difference):
+        errors = np.abs(difference)
+
+        mask = errors < self.delta
+        res = (0.5 * mask * (np.power(errors,2))) + ~mask *(self.delta*(errors-0.5*self.delta))
+        #reduction keeps the dimension of the batch as needed for numpy arrays loss calculation
+        if self.reduction=='mean':
+            return np.mean(res,axis=-1) 
+        else:
+            return np.sum(res,axis=-1)
+
+
+def global_met_loss(target, reco,reduction='mean'):
+    ''' Caclulate global met loss on torch tensors '''
     diff = target-reco
-
-    loss_fnc = CustomHuberLoss(delta=10.0)
+    loss_fnc = CustomHuberLoss(delta=10.0,reduction=reduction)
     loss = 2*(loss_fnc(diff)) #2* because in Huber loss there is a factor 1/2
     return loss
 
+def global_met_loss_numpy(target, reco):
+    ''' Caclulate global met loss on numpy arrays '''
+    diff = target-reco
+    loss_fnc = CustomHuberLoss(delta=10.0)
+    loss = 2*(loss_fnc.call_numpy(diff)) #2* because in Huber loss there is a factor 1/2
+    return loss
 
 def pairwise_distance(x, y):
     if (x.shape[0] != y.shape[0]):

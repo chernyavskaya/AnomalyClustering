@@ -142,7 +142,7 @@ def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight
         model.train()
 
     chamfer_loss_module = ChamferLossSplit()
-    ###chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.num_pid_classes))
+    #chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.num_pid_classes))
     if device=='cpu':
         chamfer_loss_func = chamfer_loss_split
     else :
@@ -212,7 +212,7 @@ def train_test_idec_graph(model,loader,p_all,optimizer,device,gamma,pid_weight,p
         model.train()
 
     chamfer_loss_module = ChamferLossSplit()
-    ###chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.num_pid_classes))
+    #chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.num_pid_classes))
     if device=='cpu':
         chamfer_loss_func = chamfer_loss_split
     else :
@@ -297,7 +297,7 @@ def pretrain_ae_graph(model,train_loader,test_loader,optimizer,start_epoch,n_epo
             summary_writer.add_histogram(layer_name,weight, epoch)
             summary_writer.add_histogram(f'{layer_name}.grad',weight.grad, epoch)
 
-        if epoch>=10 and epoch%10==0:
+        if epoch==5 or (epoch>=10 and epoch%10==0):
             checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
             save_ckp(checkpoint, pretrain_path.replace('.pkl','_epoch_{}.pkl'.format(epoch+1)))
             print('New checkpoint for epoch {} saved'.format(epoch+1))
@@ -318,6 +318,47 @@ def pretrain_ae_graph(model,train_loader,test_loader,optimizer,start_epoch,n_epo
     loss_curves(merged_data, pretrain_path.replace(pretrain_path.rsplit('/', 1)[-1],'')+'/fig_dir/ae/')
     summary_writer.close()
 
+
+
+def evaluate_losses_ae_graph(model,loader, device):
+    total_loss, total_reco_loss, total_pid_loss, total_met_loss = [],[],[],[]
+    t = tqdm.tqdm(enumerate(loader),total=len(loader))
+    for i, data in t:
+        data = data.to(device)
+        x = data.x.to(device)
+        x_met = data.x_met.reshape((-1,model.input_shape_global)).to(device)
+        batch_index = data.batch.to(device)
+
+        with torch.no_grad():
+            x_bar,x_met_bar, z = model(data)
+        #use chamefer only to get indecies first 
+        _, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.num_pid_classes:],batch_index)
+
+        met_loss = torch.mean(global_met_loss(x_met, x_met_bar,reduction='none'),axis=-1)
+        nll_loss = torch.nn.NLLLoss(reduction='none')#,weight=pid_weight)
+        pid_loss = categorical_loss(x[:,0],x_bar[:,0:model.num_pid_classes],xy_idx, yx_idx,nll_loss) #target, reco
+        pid_loss = torch.mean(to_dense_batch(pid_loss, batch_index)[0],axis=-1)
+
+        target_dense = to_dense_batch(x[:,1:], batch_index)[0]
+        reco_dense = to_dense_batch(x_bar[:,model.num_pid_classes:], batch_index)[0]
+        in_pid_dense = to_dense_batch(x[:,0], batch_index)[0]
+        out_pid_dense = to_dense_batch(x_bar[:,0:model.num_pid_classes].argmax(1), batch_index)[0]
+
+        res = chamfer_loss_func(target_dense,reco_dense,in_pid_dense,out_pid_dense)
+        if device!='cpu':
+            res_gathered = torch.stack(res,dim=0)
+            reco_loss,reco_zero_loss = res_gathered[0],res_gathered[1]
+
+        loss = reco_loss +reco_zero_loss + pid_loss + met_loss #total loss with weights ? 
+        total_loss.append(loss.clone())
+        total_reco_loss.append(reco_loss+reco_zero_loss)
+        total_pid_loss.append(pid_loss)
+        total_met_loss.append(met_loss)
+    return torch.cat(total_loss).cpu().numpy(),\
+            torch.cat(total_reco_loss).cpu().numpy(),\
+            torch.cat(total_pid_loss).cpu().numpy(),\
+            torch.cat(total_met_loss).cpu().numpy()
+        
 
 
 def train_test_ae_dense(model,loader,optimizer,device,mode='test'):

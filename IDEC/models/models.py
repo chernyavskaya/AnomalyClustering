@@ -143,6 +143,7 @@ class GraphAE(nn.Module):
     #self.dec_convs.append(layer(hidden_channels[0], self.num_emb_feats ,activation=self.activation))
     layer_kwargs['act'] = nn.Identity()
     self.dec_convs.append(layer(hidden_channels[0], self.num_feats+self.num_pid_classes-1 ,**layer_kwargs))
+    #self.dec_convs.append(layer(hidden_channels[0], self.num_feats+self.num_pid_classes-2 ,**layer_kwargs)) #do not reconstruct sin but compute it
 
     self.num_dec_convs  = len(self.dec_convs)
 
@@ -185,10 +186,18 @@ class GraphAE(nn.Module):
     x_met = self.dec_met_fc1(x_met)
     x_met_energy = F.relu(x_met[:,0:1]) #energy
     x_met_phi = x_met[:,1:]
+    #x_met_phi = x_met[:,[1]]
     #x_met_phi = cycle_by_2pi(x_met_phi) 
     #x_met_phi = PI*torch.tanh(x_met_phi) #phi
-    #x_met_phi = torch.tanh(x_met_phi) #phi
+    x_met_phi = torch.tanh(x_met_phi) #phi
     x_met = torch.cat([x_met_energy,x_met_phi], dim=-1) 
+
+    #x_met_phi = x_met[:,[1]]
+    #x_met_phi = torch.tanh(x_met_phi) #phi
+    #x_met_phi_sin = 1.-torch.pow(x_met_phi,2)
+    #x_met_phi_sin = torch.where((x_met_phi_sin>=0),torch.sqrt(x_met_phi_sin+torch.finfo(torch.float32).eps),torch.zeros(x_met_phi_sin.shape,dtype=torch.float32,device=x_met_phi_sin.device))
+    #x_met = torch.cat([x_met_energy,x_met_phi,x_met_phi_sin], dim=-1) 
+
 
     x = encoded_x[:,self.hidden_global:]
 
@@ -212,13 +221,20 @@ class GraphAE(nn.Module):
     x_cat = x[:,0:self.num_pid_classes]
     log_soft_max = nn.LogSoftmax(dim=-1)
     x_cat = log_soft_max(x_cat)
+    #mask_zeros = torch.unsqueeze(x_cat[:,0:self.num_pid_classes].argmax(1)!=0,dim=-1)
+
 
     x_eta = x[:,self.num_pid_classes-1+self.eta_idx]
     x_phi =  x[:,self.num_pid_classes-1+self.phi_idx]
+    #x_phi =  x[:,self.num_pid_classes-1+self.phi_idx[[0]]]
     x_energy_pt = x[:,self.num_pid_classes-1+self.energy_pt_idx]
     #x_phi = cycle_by_2pi(x_phi)
     #x_phi = PI*torch.tanh(x_phi)
-    #x_phi = torch.tanh(x_phi)
+    x_phi = torch.tanh(x_phi)
+    #x_phi_sin = 1-torch.pow(x_phi,2)
+    #x_phi_sin = torch.where((x_phi_sin>=0)&mask_zeros,torch.sqrt(x_phi_sin+torch.finfo(torch.float32).eps),torch.zeros(x_phi_sin.shape,dtype=torch.float32,device=x_phi_sin.device))
+
+
     #x_eta = 2.8*torch.tanh(x_eta) # have a symmetric activation function that eventually dies out. 
     #x_eta = 4.*torch.tanh(x_eta) # have a symmetric activation function that eventually dies out. 
 
@@ -226,6 +242,7 @@ class GraphAE(nn.Module):
     x_energy_pt = F.relu(x_energy_pt)
     #x_energy_pt = F.leaky_relu(x_energy_pt, negative_slope=0.1)
     x_final = torch.cat([x_cat,x_energy_pt,x_eta,x_phi], dim=-1) 
+    #x_final = torch.cat([x_cat,x_energy_pt,x_eta,x_phi,x_phi_sin], dim=-1) 
 
     return x_final,x_met
  

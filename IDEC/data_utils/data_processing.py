@@ -193,15 +193,19 @@ def prepare_graph_datas(file_dataset,n_particles,n_top_proc = -1,connect_only_re
     return file_dataset,datas
 
 
-def prepare_ad_event_based_dataset(file_dataset,tot_evt,shuffle=True):
+def prepare_ad_event_based_dataset(file_dataset,tot_evt,truth_name=None,shuffle=True):
     file_dataset = file_dataset[:int(tot_evt),:,] #removing pid to add it later
 
     truth_dataset =  np.ones(file_dataset[:,:,0].shape[0])
+    if truth_name!=None:
+        truth_dataset.fill(inverse_dict_map(process_name_dict)[truth_name])
+        
     particle_id = file_dataset[:,:,[3]]
     for p_id in [2,3,4]:
         np.place(particle_id, particle_id==p_id, p_id-1)
-    phi_cos = np.where(file_dataset[:,:,[2]]!=0,np.cos(file_dataset[:,:,[2]]),0)
     phi_sin = np.sin(file_dataset[:,:,[2]])
+    #phi_cos = np.cos(file_dataset[:,:,[2]])
+    phi_cos = np.where(file_dataset[:,:,[2]]!=0,np.cos(file_dataset[:,:,[2]]),0)
 
     #have to concatenate truth dataset to the file_dataset
     file_dataset = np.concatenate([np.repeat(np.expand_dims(np.expand_dims(truth_dataset,axis=-1),axis=-1),
