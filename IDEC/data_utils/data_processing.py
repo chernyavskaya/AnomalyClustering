@@ -194,8 +194,9 @@ def prepare_graph_datas(file_dataset,n_particles,n_top_proc = -1,connect_only_re
     return file_dataset,datas
 
 
-def prepare_ad_event_based_dataset(file_dataset,tot_evt,truth_name=None,shuffle=True):
-    file_dataset = file_dataset[:int(tot_evt),:,] #removing pid to add it later
+def prepare_ad_event_based_dataset(file_dataset,tot_evt=None,truth_name=None,shuffle=True):
+    if tot_evt!=None and tot_evt!=-1:
+        file_dataset = file_dataset[:int(tot_evt),:,]
 
     truth_dataset =  np.ones(file_dataset[:,:,0].shape[0])
     if truth_name!=None:

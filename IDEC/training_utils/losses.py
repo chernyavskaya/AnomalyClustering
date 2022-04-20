@@ -81,7 +81,7 @@ def chamfer_loss_split(target, reco, in_pid, out_pid,reduction='mean'):
         n_batches+=1
         
     if reduction=='mean':
-        return (np.sum(torch.stack(tot_eucl_non_zero))/n_batches), (np.sum(torch.stack(tot_eucl_zero))/n_batches)
+        return (torch.sum(torch.stack(tot_eucl_non_zero))/n_batches), (torch.sum(torch.stack(tot_eucl_zero))/n_batches)
     elif reduction=='sum':
         return (np.sum(torch.stack(tot_eucl_non_zero))), (np.sum(torch.stack(tot_eucl_zero)))
     else :
