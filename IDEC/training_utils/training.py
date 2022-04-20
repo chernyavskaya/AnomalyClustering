@@ -320,8 +320,19 @@ def pretrain_ae_graph(model,train_loader,test_loader,optimizer,start_epoch,n_epo
 
 
 
-def evaluate_losses_ae_graph(model,loader, device):
-    total_loss, total_reco_loss, total_pid_loss, total_met_loss = [],[],[],[]
+def evaluate_ae_graph(model,loader, device):
+
+    total_loss, total_reco_loss, total_pid_loss, total_met_loss, total_reco_zero_loss = 0.,0.,0.,0.,0.
+    chamfer_loss_module = ChamferLossSplit(reduction='none')
+    #chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.num_pid_classes))
+    if device=='cpu':
+        chamfer_loss_func = chamfer_loss_split
+    else :
+        chamfer_loss_func = torch.nn.DataParallel(chamfer_loss_module, device_ids=[0, 1],output_device=device)
+
+
+    total_simple_chamfer_loss, total_loss, total_reco_loss, total_pid_loss, total_met_loss = [],[],[],[],[]
+    pred_features,pred_features_met,latent_pred = [],[],[] 
     t = tqdm.tqdm(enumerate(loader),total=len(loader))
     for i, data in t:
         data = data.to(device)
@@ -332,8 +343,9 @@ def evaluate_losses_ae_graph(model,loader, device):
         with torch.no_grad():
             x_bar,x_met_bar, z = model(data)
         #use chamefer only to get indecies first 
-        _, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.num_pid_classes:],batch_index)
-
+        simple_chamfer_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.num_pid_classes:],batch_index,reduction='none')
+        simple_chamfer_loss = torch.mean(simple_chamfer_loss,dim=-1)
+        
         met_loss = torch.mean(global_met_loss(x_met, x_met_bar,reduction='none'),axis=-1)
         nll_loss = torch.nn.NLLLoss(reduction='none')#,weight=pid_weight)
         pid_loss = categorical_loss(x[:,0],x_bar[:,0:model.num_pid_classes],xy_idx, yx_idx,nll_loss) #target, reco
@@ -354,11 +366,33 @@ def evaluate_losses_ae_graph(model,loader, device):
         total_reco_loss.append(reco_loss+reco_zero_loss)
         total_pid_loss.append(pid_loss)
         total_met_loss.append(met_loss)
-    return torch.cat(total_loss).cpu().numpy(),\
-            torch.cat(total_reco_loss).cpu().numpy(),\
-            torch.cat(total_pid_loss).cpu().numpy(),\
-            torch.cat(total_met_loss).cpu().numpy()
-        
+        total_simple_chamfer_loss.append(simple_chamfer_loss)
+
+        pred_features.append(x_bar)
+        pred_features_met.append(x_met_bar)
+        latent_pred.append(z)
+    loss_dict = {}
+    loss_dict['all_reco_chamfer'] = torch.cat(total_simple_chamfer_loss).cpu().numpy() 
+    loss_dict['tot'] = torch.cat(total_loss).cpu().numpy() 
+    loss_dict['reco'] = torch.cat(total_reco_loss).cpu().numpy() 
+    loss_dict['pid'] = torch.cat(total_pid_loss).cpu().numpy() 
+    loss_dict['met'] = torch.cat(total_met_loss).cpu().numpy() 
+
+    batch_size = loader.batch_size
+    pred_features = torch.cat(pred_features).cpu().numpy()
+    pred_features = pred_features.reshape((len(loader)*batch_size,-1,pred_features.shape[-1]))
+
+    pred_features_met = torch.cat(pred_features_met).cpu().numpy()
+    pred_features_met = pred_features_met.reshape((len(loader)*batch_size,pred_features_met.shape[-1]))
+
+    latent_pred =  torch.cat(latent_pred).cpu().numpy()
+    latent_pred = latent_pred.reshape((len(loader)*batch_size,latent_pred.shape[-1]))
+
+
+    return pred_features,\
+            pred_features_met,\
+            latent_pred, \
+            loss_dict
 
 
 def train_test_ae_dense(model,loader,optimizer,device,mode='test'):

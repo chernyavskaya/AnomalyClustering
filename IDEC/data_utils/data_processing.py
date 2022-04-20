@@ -7,6 +7,7 @@ from torch_geometric.data import Data
 from torch_geometric.utils import from_scipy_sparse_matrix, to_dense_batch
 from scipy.sparse import csr_matrix
 import random
+import h5py
 
 def load_mnist(path='../data/mnist.npz'):
 
@@ -221,6 +222,37 @@ def prepare_ad_event_based_dataset(file_dataset,tot_evt,truth_name=None,shuffle=
 
 
 
+
+def prepare_ad_event_based_h5file(outfile,true_labels,input_feats_per_batch, input_feats_met,pred_feats_per_batch,pred_feats_met,loss_dict):
+
+    #update features pid to increase them by 1 for everything that is non zero
+    input_pid = input_feats_per_batch[:,:,[0]]
+    pred_pid = pred_feats_per_batch[:,:,[0]]
+    for p_id in [1,2,3]:
+        np.place(input_pid, input_pid==p_id, p_id+1)
+        np.place(pred_pid, pred_pid==p_id, p_id+1)
+    pred_features_upd = np.concatenate([pred_pid,pred_feats_per_batch[:,:,1:]],axis=-1)
+    input_features_upd = np.concatenate([input_pid,input_feats_per_batch[:,:,1:]],axis=-1)
+
+    #insert 0 for eta and 1 for pid for met
+    input_met_expanded =  np.expand_dims(np.insert(input_feats_met, [0,1], [1,0], axis=1),axis=1)
+    pred_met_expanded =  np.expand_dims(np.insert(pred_feats_met, [0,1], [1,0], axis=1),axis=1)
+
+
+    #print(input_met_expanded.shape,input_pid.shape,input_feats_per_batch[:,:,1:].shape)
+
+    file_dataset_input = np.concatenate([input_met_expanded,input_features_upd],axis=1)
+    file_dataset_pred = np.concatenate([pred_met_expanded,pred_features_upd],axis=1)
+
+    with h5py.File(outfile, 'w') as handle:
+        handle.create_dataset('InputParticles', data=file_dataset_input, compression='gzip')
+        handle.create_dataset('PredictedParticles', data=file_dataset_pred, compression='gzip')
+        handle.create_dataset('ProcessID', data=true_labels, compression='gzip')
+        for key in loss_dict.keys():
+            loss_label = 'Loss_'+key
+            handle.create_dataset(loss_label, data=loss_dict[key], compression='gzip')
+
+
 process_name_dict = {0: 'WW_13TeV_50PU',
                     1: 'WZ_13TeV_50PU',
                     2: 'ZZ_13TeV_50PU',
@@ -238,3 +270,32 @@ process_name_dict = {0: 'WW_13TeV_50PU',
 def inverse_dict_map(f):
     return f.__class__(map(reversed, f.items()))
 
+
+def reshape_to_dense_batch(features,batch_size):
+    s0 = features.shape[0]
+    s1 = features.shape[1]
+    s2 = features.shape[2]
+    features = features.reshape((int(s0*batch_size),int(s1/batch_size),s2))
+    return features
+
+
+def prepare_final_output_features(pred_features,pred_features_met,num_classes,batch_size):
+    pred_id = np.expand_dims(np.argmax(np.exp(pred_features[:,:,0:num_classes]),axis=-1),axis=-1)
+    pred_features_batch = np.concatenate([pred_id,pred_features[:,:,num_classes:]],axis=-1)
+    pred_features_merged = pred_features_batch.reshape(-1,pred_features_batch.shape[2])
+     
+    #pred_features_per_batch = reshape_to_dense_batch(pred_features_small,batch_size)                                   
+    #pred_met = pred_features_met.reshape((-1,pred_features_met.shape[2]))
+    
+    return pred_features_merged, pred_features_batch, pred_features_met
+
+
+def prepare_final_input_features(prepared_dataset,batch_size):
+    len_drop_last = batch_size*(len(prepared_dataset)//batch_size)
+    t_per_batch = prepared_dataset[:len_drop_last,1:,1:]
+    t = t_per_batch.reshape(-1,t_per_batch.shape[-1])
+    t_met = prepared_dataset[:len_drop_last,0:1,[2,4,5]]
+    t_met = t_met.reshape((t_met.shape[0])*t_met.shape[1],t_met.shape[2])
+    true_labels = prepared_dataset[:len_drop_last,0,[0]]
+    return t, t_per_batch, t_met, true_labels
+        
