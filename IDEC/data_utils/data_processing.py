@@ -72,6 +72,123 @@ class GraphDataset(PyGDataset):
         return self.datas[idx]
 
 
+class GraphDatasetOnline(PyGDataset):
+    def __init__(self,root,input_files,datasetname,truth_datasetname,n_events=-1,data_chunk_size=2e4,input_shape=[18,5],connect_only_real=True, shuffle=False,transform=None, pre_transform=None):
+        super().__init__(transform=None, pre_transform=None)
+        """
+        Initialize parameters of the graph dataset
+        Args:
+            root (str) : path for input files
+            input_files (list) : input h5 files
+            datasetname (str) : dataset name inside h5 file
+            truth_datasetname (str) : dataset name for the truth (process id) inside h5 file
+            n_events (int): how many events to process (-1=all in a file)
+            data_chunk_size (int) : chunk of teh dataset to load in memmory
+            input_shape (list) : input shape of the particles graph
+            connect_only_real (bool) : connect all particles or only existing
+            shuffle (bool): shuffle or not 
+        """
+        self.strides = [0]
+        self.len_in_files = []
+        self.input_files = input_files
+        self.datasetname = datasetname
+        self.truth_datasetname = truth_datasetname
+        self.shuffle = shuffle 
+        max_events = int(1e6)
+        self.n_events = max_events if n_events==-1 else int(n_events)
+        self.connect_only_real = connect_only_real
+        self.input_shape = input_shape
+        super(GraphDatasetOnline, self).__init__(root, transform, pre_transform)
+        self.calculate_offsets()
+        self.data_chunk_size=int(data_chunk_size)
+        self.current_file_idx=0
+        self.current_in_file = h5py.File(self.processed_file_names[self.current_file_idx],'r')#,driver='core',backing_store=False)
+        self.current_chunk_idx = 0
+        self.current_pytorch_datas = self.in_memory_data(shuffle=self.shuffle)
+
+
+    @property 
+    def processed_dir(self) -> str: #keep it as is in pytorch 
+        return self.root
+
+
+    @property
+    def processed_file_names(self):
+        proc_list = [self.root + '/' + f for f in self.input_files] 
+        return proc_list
+
+
+    def len(self):
+        if self.n_events <= self.strides[-1]:
+            return self.n_events
+        else:
+            return self.strides[-1]
+
+    def calculate_offsets(self):
+        for path in self.processed_paths:
+            with h5py.File(path, 'r') as f:
+                self.strides.append(f[self.datasetname].shape[0])
+        self.len_in_files = self.strides[1:]
+        self.strides = np.cumsum(self.strides)
+
+
+    def get_data_from_file(self):
+        n_start = self.current_chunk_idx*self.data_chunk_size
+        n_end = n_start+self.data_chunk_size 
+        if n_end > self.len_in_files[self.current_file_idx]:
+            n_end = self.len_in_files[self.current_file_idx]
+        return self.get_data_from_file_basic(n_start=n_start,n_end=n_end,infile=self.current_in_file)
+
+
+    def get_data_from_file_basic(self,n_start=0,n_end=0,infile=None):
+        if infile==None:
+            print('No file is passed for processing, exiting')
+            exit()
+
+        file_dataset = prepare_ad_event_based_dataset(np.array(infile[self.datasetname])[n_start:n_end,:,:],truth_dataset=np.array(infile[self.truth_datasetname])[n_start:n_end])
+        return file_dataset
+
+
+    def in_memory_data(self,shuffle=False,file_dataset=None,return_prepared_array=False): 
+        if file_dataset==None :
+            file_dataset = self.get_data_from_file() 
+        prepared_dataset,datas =  prepare_graph_datas(file_dataset,self.input_shape[0],connect_only_real=self.connect_only_real)
+        if shuffle:
+            random.Random(0).shuffle(datas)
+            random.Random(0).shuffle(prepared_dataset)
+        if return_prepared_array :
+            return prepared_dataset,datas
+        else :
+            return datas
+
+
+    def get(self, idx):
+        """ Used by PyTorch DataSet class """    
+        file_idx = np.searchsorted(self.strides, idx,side='right') - 1
+        idx_in_file = idx - self.strides[max(0, file_idx)] 
+        if file_idx >= self.strides.size:
+            raise Exception(f'{idx} is beyond the end of the event list {self.strides[-1]}')
+        if self.current_file_idx != file_idx:
+            self.current_file_idx = file_idx
+            self.current_in_file.close()
+            self.current_in_file = h5py.File(self.processed_paths[self.current_file_idx],'r')#,driver='core',backing_store=False)
+            self.current_chunk_idx = 0 #reset current chunk index
+            self.current_pytorch_datas = self.in_memory_data(shuffle=self.shuffle)
+        if (idx_in_file >= (self.current_chunk_idx+1)*len(self.current_pytorch_datas)):
+            self.current_chunk_idx+=1
+            self.current_pytorch_datas = self.in_memory_data(shuffle=self.shuffle)
+        idx_in_chunk =  idx_in_file % len(self.current_pytorch_datas)
+        element_to_yield = self.current_pytorch_datas[idx_in_chunk]
+        #Finally reset everything at the end of an epoch
+        if idx==self.len()-1:  
+            self.current_file_idx=0
+            self.current_in_file.close()
+            self.current_in_file = h5py.File(self.processed_paths[self.current_file_idx],'r')#,driver='core',backing_store=False)
+            self.current_chunk_idx = 0
+            self.current_pytorch_datas =self.in_memory_data(shuffle=self.shuffle)
+        return element_to_yield
+        
+
 
 
 def get_relative_weights(data,mode='max'):
@@ -161,7 +278,7 @@ def prepare_1d_datasets(file_dataset,n_top_proc = -1):
 
 
 def prepare_graph_datas(file_dataset,n_particles,n_top_proc = -1,connect_only_real=True):
-    print('Preparing dataset, check that the feature indexing corresponds to your dataset!')
+    #print('Preparing dataset, check that the feature indexing corresponds to your dataset!')
     datas = []
     #file_dataset = proprocess_e_pt(file_dataset,idx=[2,3],scale=1e5,log=True) #idx=[2,3]
     file_dataset = proprocess_e_pt(file_dataset,idx=[2],scale=1.,log=True) #idx=[1]
@@ -172,7 +289,7 @@ def prepare_graph_datas(file_dataset,n_particles,n_top_proc = -1,connect_only_re
     file_dataset = file_dataset[:,:n_particles+1,:]
 
     tot_evt = file_dataset.shape[0]
-    print('Preparing the dataset of {} events'.format(tot_evt))
+    #print('Preparing the dataset of {} events'.format(tot_evt))
     n_objs = n_particles
     if not connect_only_real:
         #connecting all particles
@@ -190,21 +307,20 @@ def prepare_graph_datas(file_dataset,n_particles,n_top_proc = -1,connect_only_re
     x_met = [torch.tensor(file_dataset[i_evt,0,[2,4,5]], dtype=torch.float) for i_evt in range(tot_evt)]
     datas = [Data(x=x_event, edge_index=edge_index_event,y=torch.unsqueeze(y_event, 0),x_met=x_met_event) 
     for x_event,edge_index_event,y_event,x_met_event in zip(x,edge_index,y,x_met)]
-    print('Dataset of {} events prepared'.format(tot_evt))
+    #print('Dataset of {} events prepared'.format(tot_evt))
     return file_dataset,datas
 
 
-def prepare_ad_event_based_dataset(file_dataset,tot_evt=None,truth_name=None,shuffle=True):
+def prepare_ad_event_based_dataset(file_dataset,truth_dataset=None,tot_evt=None,shuffle=True):
     if tot_evt!=None and tot_evt!=-1:
         file_dataset = file_dataset[:int(tot_evt),:,]
 
-    truth_dataset =  np.ones(file_dataset[:,:,0].shape[0])
-    if truth_name!=None:
-        truth_dataset.fill(inverse_dict_map(process_name_dict)[truth_name])
+    #truth_dataset =  np.ones(file_dataset[:,:,0].shape[0])
+    #if truth_name!=None:
+    #    truth_dataset.fill(inverse_dict_map(process_name_dict)[truth_name])
         
     particle_id = file_dataset[:,:,[3]]
-    for p_id in [2,3,4]:
-        np.place(particle_id, particle_id==p_id, p_id-1)
+    particle_id = np.where(particle_id>1,particle_id-1,particle_id)
     phi_sin = np.sin(file_dataset[:,:,[2]])
     #phi_cos = np.cos(file_dataset[:,:,[2]])
     phi_cos = np.where(file_dataset[:,:,[2]]!=0,np.cos(file_dataset[:,:,[2]]),0)
@@ -229,9 +345,9 @@ def prepare_ad_event_based_h5file(outfile,true_labels,input_feats_per_batch, inp
     #update features pid to increase them by 1 for everything that is non zero
     input_pid = input_feats_per_batch[:,:,[0]]
     pred_pid = pred_feats_per_batch[:,:,[0]]
-    for p_id in [1,2,3]:
-        np.place(input_pid, input_pid==p_id, p_id+1)
-        np.place(pred_pid, pred_pid==p_id, p_id+1)
+    input_pid = np.where(input_pid>0,input_pid+1,input_pid)
+    pred_pid = np.where(pred_pid>0,pred_pid+1,pred_pid)
+
     pred_features_upd = np.concatenate([pred_pid,pred_feats_per_batch[:,:,1:]],axis=-1)
     input_features_upd = np.concatenate([input_pid,input_feats_per_batch[:,:,1:]],axis=-1)
 
@@ -284,10 +400,6 @@ def prepare_final_output_features(pred_features,pred_features_met,num_classes,ba
     pred_id = np.expand_dims(np.argmax(np.exp(pred_features[:,:,0:num_classes]),axis=-1),axis=-1)
     pred_features_batch = np.concatenate([pred_id,pred_features[:,:,num_classes:]],axis=-1)
     pred_features_merged = pred_features_batch.reshape(-1,pred_features_batch.shape[2])
-     
-    #pred_features_per_batch = reshape_to_dense_batch(pred_features_small,batch_size)                                   
-    #pred_met = pred_features_met.reshape((-1,pred_features_met.shape[2]))
-    
     return pred_features_merged, pred_features_batch, pred_features_met
 
 

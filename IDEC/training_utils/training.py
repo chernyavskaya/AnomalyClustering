@@ -321,6 +321,7 @@ def pretrain_ae_graph(model,train_loader,test_loader,optimizer,start_epoch,n_epo
 
 
 def evaluate_ae_graph(model,loader, device):
+    model = model.eval() 
 
     total_loss, total_reco_loss, total_pid_loss, total_met_loss, total_reco_zero_loss = 0.,0.,0.,0.,0.
     chamfer_loss_module = ChamferLossSplit(reduction='none')
@@ -333,10 +334,13 @@ def evaluate_ae_graph(model,loader, device):
 
     total_simple_chamfer_loss, total_loss, total_reco_loss, total_pid_loss, total_met_loss = [],[],[],[],[]
     pred_features,pred_features_met,latent_pred = [],[],[] 
+    input_features,input_met,input_true_labels = [],[],[] 
+
     t = tqdm.tqdm(enumerate(loader),total=len(loader))
     for i, data in t:
         data = data.to(device)
         x = data.x.to(device)
+        y = data.y
         x_met = data.x_met.reshape((-1,model.input_shape_global)).to(device)
         batch_index = data.batch.to(device)
 
@@ -371,6 +375,10 @@ def evaluate_ae_graph(model,loader, device):
         pred_features.append(x_bar)
         pred_features_met.append(x_met_bar)
         latent_pred.append(z)
+        input_features.append(x)
+        input_met.append(x_met)
+        input_true_labels.append(y)
+                
     loss_dict = {}
     loss_dict['all_reco_chamfer'] = torch.cat(total_simple_chamfer_loss).cpu().numpy() 
     loss_dict['tot'] = torch.cat(total_loss).cpu().numpy() 
@@ -379,21 +387,30 @@ def evaluate_ae_graph(model,loader, device):
     loss_dict['met'] = torch.cat(total_met_loss).cpu().numpy() 
 
     batch_size = loader.batch_size
-    pred_features = torch.cat(pred_features).cpu().numpy()
-    pred_features = pred_features.reshape((len(loader)*batch_size,-1,pred_features.shape[-1]))
+    pred_features = detach_reshape(pred_features,len(loader),batch_size,shape=3)
+    pred_features_met = detach_reshape(pred_features_met,len(loader),batch_size,shape=2)
+    latent_pred =  detach_reshape(latent_pred,len(loader),batch_size,shape=2)
+    input_features = detach_reshape(input_features,len(loader),batch_size,shape=3)
+    input_met = detach_reshape(input_met,len(loader),batch_size,shape=2)
+    input_true_labels = detach_reshape(input_true_labels,len(loader),batch_size,shape=2)
 
-    pred_features_met = torch.cat(pred_features_met).cpu().numpy()
-    pred_features_met = pred_features_met.reshape((len(loader)*batch_size,pred_features_met.shape[-1]))
+    out_dict = {}
+    out_dict['pred_features'] = pred_features
+    out_dict['pred_met'] = pred_features_met
+    out_dict['pred_latent'] = latent_pred
+    out_dict['input_features'] =input_features    
+    out_dict['input_met'] = input_met
+    out_dict['input_true_labels'] = input_true_labels
 
-    latent_pred =  torch.cat(latent_pred).cpu().numpy()
-    latent_pred = latent_pred.reshape((len(loader)*batch_size,latent_pred.shape[-1]))
+    return out_dict, loss_dict
 
-
-    return pred_features,\
-            pred_features_met,\
-            latent_pred, \
-            loss_dict
-
+def detach_reshape(ar,num_batches,batch_size,shape):
+    ar = torch.cat(ar).cpu().numpy()
+    if shape==2:
+        ar = ar.reshape((-1,ar.shape[-1]))
+    elif shape==3:
+        ar = ar.reshape((num_batches*batch_size,-1,ar.shape[-1]))
+    return ar
 
 def train_test_ae_dense(model,loader,optimizer,device,mode='test'):
     if mode=='test':
