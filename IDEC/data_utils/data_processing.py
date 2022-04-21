@@ -130,6 +130,7 @@ class GraphDatasetOnline(PyGDataset):
                 self.strides.append(f[self.datasetname].shape[0])
         self.len_in_files = self.strides[1:]
         self.strides = np.cumsum(self.strides)
+        print(self.len_in_files,self.strides)
 
 
     def get_data_from_file(self):
@@ -174,7 +175,7 @@ class GraphDatasetOnline(PyGDataset):
             self.current_in_file = h5py.File(self.processed_paths[self.current_file_idx],'r')#,driver='core',backing_store=False)
             self.current_chunk_idx = 0 #reset current chunk index
             self.current_pytorch_datas = self.in_memory_data(shuffle=self.shuffle)
-        if (idx_in_file >= (self.current_chunk_idx+1)*len(self.current_pytorch_datas)):
+        if (idx_in_file >= (self.current_chunk_idx+1)*self.data_chunk_size): 
             self.current_chunk_idx+=1
             self.current_pytorch_datas = self.in_memory_data(shuffle=self.shuffle)
         idx_in_chunk =  idx_in_file % len(self.current_pytorch_datas)

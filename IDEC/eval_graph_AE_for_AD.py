@@ -98,12 +98,12 @@ if __name__ == "__main__":
         sig_dataset = GraphDataset(datas_sig)
     else :
         bg_dataset = GraphDatasetOnline(root=DATA_PATH,input_files=[BG_NAME],datasetname='Particles',truth_datasetname='ProcessID',
-                                  n_events=-1,data_chunk_size=int(1e5),
+                                  n_events=-1,data_chunk_size=int(2e4),
                                   input_shape=[18,5],connect_only_real=True, 
                                   shuffle=True)
                         
         sig_dataset = GraphDatasetOnline(root=DATA_PATH,input_files=['sig_'+s+'.h5' for s in SIG_NAMES],datasetname='Particles',truth_datasetname='ProcessID',
-                                  n_events=-1,data_chunk_size=int(1e5),
+                                  n_events=-1,data_chunk_size=int(2e4),
                                   input_shape=[18,5],connect_only_real=True, 
                                   shuffle=True)
 
