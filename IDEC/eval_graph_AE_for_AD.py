@@ -70,7 +70,7 @@ if __name__ == "__main__":
     pathlib.Path(output_path).mkdir(parents=True, exist_ok=True)
 
     DATA_PATH = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/autoencoder_for_anomaly/files/AD_event_based/graph_data/validation/'
-    BG_NAME = 'background_validation.h5'
+    BG_NAME = 'background_validation_fixed.h5'
     SIG_NAMES = 'Ato4l,hChToTauNu,hToTauTau,LQ'.split(',') 
 
     if not args.generator:
@@ -87,7 +87,7 @@ if __name__ == "__main__":
 
         file_datasets_signals = []
         for SIG_NAME in SIG_NAMES:
-            SIG_NAME_file = 'sig_'+SIG_NAME+'.h5'
+            SIG_NAME_file = 'sig_'+SIG_NAME+'_fixed.h5'
             filename_sig = DATA_PATH + SIG_NAME_file 
             in_file_sig = h5py.File(filename_sig, 'r') 
             file_dataset_sig = np.array(in_file_sig['Particles'])
@@ -99,12 +99,12 @@ if __name__ == "__main__":
         sig_dataset = GraphDataset(datas_sig)
     else :
         bg_dataset = GraphDatasetOnline(root=DATA_PATH,input_files=[BG_NAME],datasetname='Particles',truth_datasetname='ProcessID',
-                                  n_events=1e6,data_chunk_size=int(1e5),
+                                  n_events=1e5,data_chunk_size=int(1e4),
                                   input_shape=[18,5],connect_only_real=True, 
                                   shuffle=True)
                         
-        sig_dataset = GraphDatasetOnline(root=DATA_PATH,input_files=['sig_'+s+'.h5' for s in SIG_NAMES],datasetname='Particles',truth_datasetname='ProcessID',
-                                  n_events=-1,data_chunk_size=int(1e5),
+        sig_dataset = GraphDatasetOnline(root=DATA_PATH,input_files=['sig_'+s+'_fixed.h5' for s in SIG_NAMES],datasetname='Particles',truth_datasetname='ProcessID',
+                                  n_events=-1,data_chunk_size=int(1e4),
                                   input_shape=[18,5],connect_only_real=True, 
                                   shuffle=True)
 

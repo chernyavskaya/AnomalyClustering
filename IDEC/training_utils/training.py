@@ -141,10 +141,10 @@ def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight
     else:
         model.train()
 
-    simple_chamfer=True
+    simple_chamfer=False
     if not simple_chamfer:
-        #chamfer_loss_module = ChamferLossSplit()
-        chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.num_pid_classes))
+        chamfer_loss_module = ChamferLossSplit()
+        #chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.num_pid_classes))
         if device=='cpu':
            chamfer_loss_func = chamfer_loss_split
         else :
@@ -324,12 +324,14 @@ def evaluate_ae_graph(model,loader, device):
     model = model.eval() 
 
     total_loss, total_reco_loss, total_pid_loss, total_met_loss, total_reco_zero_loss = 0.,0.,0.,0.,0.
-    chamfer_loss_module = ChamferLossSplit(reduction='none')
-    #chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.num_pid_classes))
-    if device=='cpu':
-        chamfer_loss_func = chamfer_loss_split
-    else :
-        chamfer_loss_func = torch.nn.DataParallel(chamfer_loss_module, device_ids=[0, 1],output_device=device)
+    simple_chamfer=False
+    if not simple_chamfer:
+        chamfer_loss_module = ChamferLossSplit(reduction='none')
+        #chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.num_pid_classes))
+        if device=='cpu':
+            chamfer_loss_func = chamfer_loss_split
+        else :
+            chamfer_loss_func = torch.nn.DataParallel(chamfer_loss_module, device_ids=[0, 1],output_device=device)
 
 
     total_simple_chamfer_loss, total_loss, total_reco_loss, total_pid_loss, total_met_loss = [],[],[],[],[]
@@ -349,21 +351,24 @@ def evaluate_ae_graph(model,loader, device):
         #use chamefer only to get indecies first 
         simple_chamfer_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.num_pid_classes:],batch_index,reduction='none')
         simple_chamfer_loss = torch.mean(simple_chamfer_loss,dim=-1)
-        
+        reco_loss = simple_chamfer_loss
+        reco_zero_loss = torch.tensor(0.,device=device)
+
         met_loss = torch.mean(global_met_loss(x_met, x_met_bar,reduction='none'),axis=-1)
         nll_loss = torch.nn.NLLLoss(reduction='none')#,weight=pid_weight)
         pid_loss = categorical_loss(x[:,0],x_bar[:,0:model.num_pid_classes],xy_idx, yx_idx,nll_loss) #target, reco
         pid_loss = torch.mean(to_dense_batch(pid_loss, batch_index)[0],axis=-1)
 
-        target_dense = to_dense_batch(x[:,1:], batch_index)[0]
-        reco_dense = to_dense_batch(x_bar[:,model.num_pid_classes:], batch_index)[0]
-        in_pid_dense = to_dense_batch(x[:,0], batch_index)[0]
-        out_pid_dense = to_dense_batch(x_bar[:,0:model.num_pid_classes].argmax(1), batch_index)[0]
+        if not simple_chamfer:
+            target_dense = to_dense_batch(x[:,1:], batch_index)[0]
+            reco_dense = to_dense_batch(x_bar[:,model.num_pid_classes:], batch_index)[0]
+            in_pid_dense = to_dense_batch(x[:,0], batch_index)[0]
+            out_pid_dense = to_dense_batch(x_bar[:,0:model.num_pid_classes].argmax(1), batch_index)[0]
 
-        res = chamfer_loss_func(target_dense,reco_dense,in_pid_dense,out_pid_dense)
-        if device!='cpu':
-            res_gathered = torch.stack(res,dim=0)
-            reco_loss,reco_zero_loss = res_gathered[0],res_gathered[1]
+            res = chamfer_loss_func(target_dense,reco_dense,in_pid_dense,out_pid_dense)
+            if device!='cpu':
+                res_gathered = torch.stack(res,dim=0)
+                reco_loss,reco_zero_loss = res_gathered[0],res_gathered[1]
 
         loss = reco_loss +reco_zero_loss + pid_loss + met_loss #total loss with weights ? 
         total_loss.append(loss.clone())
