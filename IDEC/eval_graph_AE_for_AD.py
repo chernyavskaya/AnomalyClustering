@@ -91,19 +91,20 @@ if __name__ == "__main__":
             filename_sig = DATA_PATH + SIG_NAME_file 
             in_file_sig = h5py.File(filename_sig, 'r') 
             file_dataset_sig = np.array(in_file_sig['Particles'])
-            file_dataset_sig =  data_proc.prepare_ad_event_based_dataset(file_dataset_sig,truth_dataset,1e5,shuffle=True)
+            truth_dataset_sig = np.array(in_file_sig['ProcessID'])
+            file_dataset_sig =  data_proc.prepare_ad_event_based_dataset(file_dataset_sig,truth_dataset_sig,1e5,shuffle=True)
             file_datasets_signals.append(file_dataset_sig)
         file_dataset_sig = np.concatenate(file_datasets_signals,axis=0)
         prepared_dataset_sig,datas_sig =  data_proc.prepare_graph_datas(file_dataset_sig,params_dict['input_shape'][0],n_top_proc = -1,connect_only_real=True)
         sig_dataset = GraphDataset(datas_sig)
     else :
         bg_dataset = GraphDatasetOnline(root=DATA_PATH,input_files=[BG_NAME],datasetname='Particles',truth_datasetname='ProcessID',
-                                  n_events=-1,data_chunk_size=int(2e4),
+                                  n_events=1e6,data_chunk_size=int(1e5),
                                   input_shape=[18,5],connect_only_real=True, 
                                   shuffle=True)
                         
         sig_dataset = GraphDatasetOnline(root=DATA_PATH,input_files=['sig_'+s+'.h5' for s in SIG_NAMES],datasetname='Particles',truth_datasetname='ProcessID',
-                                  n_events=-1,data_chunk_size=int(2e4),
+                                  n_events=-1,data_chunk_size=int(1e5),
                                   input_shape=[18,5],connect_only_real=True, 
                                   shuffle=True)
 
@@ -120,8 +121,9 @@ if __name__ == "__main__":
     pred_feats_merged_sig, pred_feats_per_batch_sig, pred_met_sig = data_proc.prepare_final_output_features(out_dict_sig['pred_features'],out_dict_sig['pred_met'],num_classes,args.batch_size)
 
 
-    out_bg_file = output_path+'/background_evaluated.h5'
-    out_sig_file = output_path+'/signals_evaluated.h5'
+    model_num = args.load_ae.split('epoch_')[1].replace('.pkl','.h5')
+    out_bg_file = output_path+'/background_evaluated_model'+model_num
+    out_sig_file = output_path+'/signals_evaluated_model'+model_num
     data_proc.prepare_ad_event_based_h5file(out_bg_file,out_dict['input_true_labels'],out_dict['input_features'], out_dict['input_met'],pred_feats_per_batch, pred_met,loss_dict)
     data_proc.prepare_ad_event_based_h5file(out_sig_file,out_dict_sig['input_true_labels'],out_dict_sig['input_features'], out_dict_sig['input_met'],pred_feats_per_batch_sig,pred_met_sig,loss_dict_sig)
 

@@ -134,7 +134,7 @@ def chamfer_loss_split_pid(target, reco, in_pid, out_pid, pids):
     for pid in  pids: 
         eucl_losses[pid] /= n_batches  
 
-    return torch.sum(eucl_losses[1:]),eucl_losses[0]
+    return torch.mean(eucl_losses[1:]),eucl_losses[0]
 
 
 def chamfer_loss_numpy(target, reco):

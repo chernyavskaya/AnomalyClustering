@@ -94,8 +94,7 @@ class GraphDatasetOnline(PyGDataset):
         self.datasetname = datasetname
         self.truth_datasetname = truth_datasetname
         self.shuffle = shuffle 
-        max_events = int(1e6)
-        self.n_events = max_events if n_events==-1 else int(n_events)
+        self.n_events = int(n_events)
         self.connect_only_real = connect_only_real
         self.input_shape = input_shape
         super(GraphDatasetOnline, self).__init__(root, transform, pre_transform)
@@ -130,7 +129,8 @@ class GraphDatasetOnline(PyGDataset):
                 self.strides.append(f[self.datasetname].shape[0])
         self.len_in_files = self.strides[1:]
         self.strides = np.cumsum(self.strides)
-        print(self.len_in_files,self.strides)
+        if self.n_events==-1:
+            self.n_events = self.strides[-1]
 
 
     def get_data_from_file(self):
@@ -181,10 +181,11 @@ class GraphDatasetOnline(PyGDataset):
         idx_in_chunk =  idx_in_file % len(self.current_pytorch_datas)
         element_to_yield = self.current_pytorch_datas[idx_in_chunk]
         #Finally reset everything at the end of an epoch
-        if idx==self.len()-1:  
-            self.current_file_idx=0
-            self.current_in_file.close()
-            self.current_in_file = h5py.File(self.processed_paths[self.current_file_idx],'r')#,driver='core',backing_store=False)
+        if idx==self.len()-1:
+            if self.current_file_idx!=0:
+                self.current_file_idx=0
+                self.current_in_file.close()
+                self.current_in_file = h5py.File(self.processed_paths[self.current_file_idx],'r')#,driver='core',backing_store=False)
             self.current_chunk_idx = 0
             self.current_pytorch_datas =self.in_memory_data(shuffle=self.shuffle)
         return element_to_yield
@@ -208,17 +209,48 @@ def make_adjacencies(particles):
     adjacencies = (real_p_mask[:,:,np.newaxis] * real_p_mask[:,np.newaxis,:]).astype('float32')
     return adjacencies
 
-def proprocess_e_pt(file_dataset, idx=[2,3], scale=1.e5,log=True):
+def proprocess_e_pt(file_dataset, idx=[2,3], scale=1.e5,shift=0.,log=True):
     if len(file_dataset.shape)==3:
         file_dataset[:,:,idx] = file_dataset[:,:,idx]/scale 
-        #log of energy and pt as preprocessing
+        #log of energy and pt as preprocessing, but create a continious distribution 
         if log==True:
-            file_dataset[:,:,idx] = np.log(file_dataset[:,:,idx]+1)
+            #file_dataset[:,:,idx] = np.log(file_dataset[:,:,idx]+1)
+            file_dataset[:,:,idx] = np.where(file_dataset[:,:,idx]>0,\
+                                            np.log(file_dataset[:,:,idx]),\
+                                            shift)
+            file_dataset[:,:,idx] -=shift
     elif len(file_dataset.shape)==2:
         file_dataset[:,idx] = file_dataset[:,idx]/scale 
         #log of energy and pt as preprocessing
         if log==True:
-            file_dataset[:,idx] = np.log(file_dataset[:,idx]+1)
+            #file_dataset[:,idx] = np.log(file_dataset[:,idx]+1)
+            file_dataset[:,idx] = np.where(file_dataset[:,idx]>0,\
+                                            np.log(file_dataset[:,idx]),\
+                                            shift) #np.log(np.min(file_dataset[:,idx][file_dataset[:,idx]>0]))*0.999
+            file_dataset[:,idx] -=shift
+
+    return file_dataset
+
+def proprocess_e_pt(file_dataset, idx=[2,3], scale=1.e5,shift=0.,log=True):
+    if len(file_dataset.shape)==3:
+        file_dataset[:,:,idx] = file_dataset[:,:,idx]/scale 
+        #log of energy and pt as preprocessing, but create a continious distribution 
+        if log==True:
+            #file_dataset[:,:,idx] = np.log(file_dataset[:,:,idx]+1)
+            file_dataset[:,:,idx] = np.where(file_dataset[:,:,idx]>0,\
+                                            np.log(file_dataset[:,:,idx]),\
+                                            np.log(np.min(file_dataset[:,:,idx][file_dataset[:,:,idx]>0]))*0.999)
+            file_dataset[:,:,idx] -=shift
+    elif len(file_dataset.shape)==2:
+        file_dataset[:,idx] = file_dataset[:,idx]/scale 
+        #log of energy and pt as preprocessing
+        if log==True:
+            #file_dataset[:,idx] = np.log(file_dataset[:,idx]+1)
+            file_dataset[:,idx] = np.where(file_dataset[:,idx]>0,\
+                                            np.log(file_dataset[:,idx]),\
+                                            np.log(np.min(file_dataset[:,idx][file_dataset[:,idx]>0]))*0.999)
+            file_dataset[:,idx] -=shift
+
     return file_dataset
 
 def select_top_n_procs(file_dataset_proc,n_top_proc):
@@ -282,7 +314,7 @@ def prepare_graph_datas(file_dataset,n_particles,n_top_proc = -1,connect_only_re
     #print('Preparing dataset, check that the feature indexing corresponds to your dataset!')
     datas = []
     #file_dataset = proprocess_e_pt(file_dataset,idx=[2,3],scale=1e5,log=True) #idx=[2,3]
-    file_dataset = proprocess_e_pt(file_dataset,idx=[2],scale=1.,log=True) #idx=[1]
+    file_dataset = proprocess_e_pt(file_dataset,idx=[2],scale=1.,shift=np.log(4.)*0.999,log=True) #idx=[1]
 
     if n_top_proc > 0:
         top_proc_mask =  select_top_n_procs(file_dataset[:,0,0],n_top_proc)
@@ -315,6 +347,7 @@ def prepare_graph_datas(file_dataset,n_particles,n_top_proc = -1,connect_only_re
 def prepare_ad_event_based_dataset(file_dataset,truth_dataset=None,tot_evt=None,shuffle=True):
     if tot_evt!=None and tot_evt!=-1:
         file_dataset = file_dataset[:int(tot_evt),:,]
+        truth_dataset = truth_dataset[:int(tot_evt)]
 
     #truth_dataset =  np.ones(file_dataset[:,:,0].shape[0])
     #if truth_name!=None:
