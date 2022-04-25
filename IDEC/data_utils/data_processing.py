@@ -73,7 +73,7 @@ class GraphDataset(PyGDataset):
 
 
 class GraphDatasetOnline(PyGDataset):
-    def __init__(self,root,input_files,datasetname,truth_datasetname,n_events=-1,data_chunk_size=2e4,input_shape=[18,5],connect_only_real=True, shuffle=False,transform=None, pre_transform=None):
+    def __init__(self,root,input_files,datasetname,truth_datasetname,n_events=-1,n_events_per_file=-1,data_chunk_size=2e4,input_shape=[18,5],connect_only_real=True, shuffle=False,transform=None, pre_transform=None):
         super().__init__(transform=None, pre_transform=None)
         """
         Initialize parameters of the graph dataset
@@ -95,6 +95,7 @@ class GraphDatasetOnline(PyGDataset):
         self.truth_datasetname = truth_datasetname
         self.shuffle = shuffle 
         self.n_events = int(n_events)
+        self.n_events_per_file = int(n_events_per_file)
         self.connect_only_real = connect_only_real
         self.input_shape = input_shape
         super(GraphDatasetOnline, self).__init__(root, transform, pre_transform)
@@ -127,6 +128,8 @@ class GraphDatasetOnline(PyGDataset):
         for path in self.processed_paths:
             with h5py.File(path, 'r') as f:
                 self.strides.append(f[self.datasetname].shape[0])
+                if (self.n_events_per_file > 0) and (self.strides[-1]>self.n_events_per_file):
+                    self.strides[-1] = self.n_events_per_file
         self.len_in_files = self.strides[1:]
         self.strides = np.cumsum(self.strides)
         if self.n_events==-1:

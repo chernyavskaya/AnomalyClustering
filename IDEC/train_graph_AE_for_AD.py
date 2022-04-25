@@ -104,6 +104,7 @@ if __name__ == "__main__":
     parser.add_argument('--lr', type=float, default=0.005)
     parser.add_argument('--n_clusters', default=6, type=int)
     parser.add_argument('--batch_size', default=256, type=int)
+    parser.add_argument('--n_events', default=int(1e6), type=int)
     parser.add_argument('--latent_dim', default=8, type=int)
     parser.add_argument('--input_shape', default='18,5', type=str)
     parser.add_argument('--num_pid_classes', default=4, type=int)
@@ -154,12 +155,13 @@ if __name__ == "__main__":
     else:
 
         train_dataset = GraphDatasetOnline(root=DATA_PATH,input_files=[BG_NAME],datasetname='Particles',truth_datasetname='ProcessID',
-                                  n_events=1e6,data_chunk_size=int(2e4),
+                                  n_events=args.n_events,data_chunk_size=int(2e4),
                                   input_shape=[18,5],connect_only_real=True, 
                                   shuffle=True)
                         
+        test_split = 0.1
         test_dataset = GraphDatasetOnline(root=DATA_PATH,input_files=[BG_NAME.replace('train','test')],datasetname='Particles',truth_datasetname='ProcessID',
-                                  n_events=1e5,data_chunk_size=int(2e4),
+                                  n_events=args.n_events*test_split,data_chunk_size=int(2e4),
                                   input_shape=[18,5],connect_only_real=True, 
                                   shuffle=True)
 

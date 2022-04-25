@@ -324,7 +324,7 @@ def evaluate_ae_graph(model,loader, device):
     model = model.eval() 
 
     total_loss, total_reco_loss, total_pid_loss, total_met_loss, total_reco_zero_loss = 0.,0.,0.,0.,0.
-    simple_chamfer=False
+    simple_chamfer=True
     if not simple_chamfer:
         chamfer_loss_module = ChamferLossSplit(reduction='none')
         #chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.num_pid_classes))
@@ -371,25 +371,25 @@ def evaluate_ae_graph(model,loader, device):
                 reco_loss,reco_zero_loss = res_gathered[0],res_gathered[1]
 
         loss = reco_loss +reco_zero_loss + pid_loss + met_loss #total loss with weights ? 
-        total_loss.append(loss.clone())
-        total_reco_loss.append(reco_loss+reco_zero_loss)
-        total_pid_loss.append(pid_loss)
-        total_met_loss.append(met_loss)
-        total_simple_chamfer_loss.append(simple_chamfer_loss)
+        total_loss.append(loss.clone().cpu().numpy())
+        total_reco_loss.append((reco_loss+reco_zero_loss).cpu().numpy())
+        total_pid_loss.append(pid_loss.cpu().numpy())
+        total_met_loss.append(met_loss.cpu().numpy())
+        total_simple_chamfer_loss.append(simple_chamfer_loss.cpu().numpy())
 
-        pred_features.append(x_bar)
-        pred_features_met.append(x_met_bar)
-        latent_pred.append(z)
-        input_features.append(x)
-        input_met.append(x_met)
-        input_true_labels.append(y)
+        pred_features.append(x_bar.cpu().numpy())
+        pred_features_met.append(x_met_bar.cpu().numpy())
+        latent_pred.append(z.cpu().numpy())
+        input_features.append(x.cpu().numpy())
+        input_met.append(x_met.cpu().numpy())
+        input_true_labels.append(y.cpu().numpy())
                 
     loss_dict = {}
-    loss_dict['all_reco_chamfer'] = torch.cat(total_simple_chamfer_loss).cpu().numpy() 
-    loss_dict['tot'] = torch.cat(total_loss).cpu().numpy() 
-    loss_dict['reco'] = torch.cat(total_reco_loss).cpu().numpy() 
-    loss_dict['pid'] = torch.cat(total_pid_loss).cpu().numpy() 
-    loss_dict['met'] = torch.cat(total_met_loss).cpu().numpy() 
+    loss_dict['all_reco_chamfer'] = np.concatenate(total_simple_chamfer_loss,axis=0) 
+    loss_dict['tot'] = np.concatenate(total_loss,axis=0)
+    loss_dict['reco'] = np.concatenate(total_reco_loss,axis=0) 
+    loss_dict['pid'] = np.concatenate(total_pid_loss,axis=0)
+    loss_dict['met'] = np.concatenate(total_met_loss,axis=0) 
 
     batch_size = loader.batch_size
     pred_features = detach_reshape(pred_features,len(loader),batch_size,shape=3)
@@ -410,7 +410,7 @@ def evaluate_ae_graph(model,loader, device):
     return out_dict, loss_dict
 
 def detach_reshape(ar,num_batches,batch_size,shape):
-    ar = torch.cat(ar).cpu().numpy()
+    ar = np.concatenate(ar,axis=0)
     if shape==2:
         if len(ar.shape)==1: 
             ar = ar.reshape((-1,1))
