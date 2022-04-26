@@ -25,7 +25,7 @@ from torch.nn import ModuleList
 from torch.nn import Embedding
 from torch.autograd import Variable
 
-from torch_geometric.nn import GCN, GCNConv, EdgeConv, GATConv, GATv2Conv, global_mean_pool, DynamicEdgeConv, BatchNorm
+from torch_geometric.nn import  GCNConv, EdgeConv, GATConv, global_mean_pool, DynamicEdgeConv, BatchNorm
 from torch_geometric.utils import from_scipy_sparse_matrix, to_dense_batch
 from torch_scatter import scatter_mean,scatter_max
 
@@ -88,7 +88,7 @@ class GraphAE(nn.Module):
     #Which main block to use for the architecture
     layer = EdgeConvLayer # EdgeConvLayer #GCNConv #GCN
     layer_kwargs = {'act':activation, 'dropout':dropout}
-    if layer == GCN :
+    if layer == GCNConv :
         layer_kwargs['num_layers'] = 1
 
     self.activation = activation 

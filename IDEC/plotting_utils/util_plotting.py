@@ -3,8 +3,8 @@ import matplotlib.colors as colors
 import numpy as np
 import matplotlib.pyplot as plt
 import sklearn.metrics as skl
-plt_style = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/ADgvae/utils/adfigstyle.mplstyle'
-plt.style.use(plt_style)
+#plt_style = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/ADgvae/utils/adfigstyle.mplstyle'
+#plt.style.use(plt_style)
 
 
 def plot_hist( data, xlabel, ylabel, title, plotname=None, legend=[], ylogscale=True ):

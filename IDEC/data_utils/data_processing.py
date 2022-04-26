@@ -73,11 +73,12 @@ class GraphDataset(PyGDataset):
 
 
 class GraphDatasetOnline(PyGDataset):
-    def __init__(self,root,input_files,datasetname,truth_datasetname,n_events=-1,n_events_per_file=-1,data_chunk_size=2e4,input_shape=[18,5],connect_only_real=True, shuffle=False,transform=None, pre_transform=None):
+    def __init__(self,root,input_files,datasetname,truth_datasetname,in_memory=False,n_events=-1,n_events_per_file=-1,data_chunk_size=2e4,input_shape=[18,5],connect_only_real=True, shuffle=False,transform=None, pre_transform=None):
         super().__init__(transform=None, pre_transform=None)
         """
         Initialize parameters of the graph dataset
         Args:
+            in_memory (bool) : load evetything in memory or use a generator
             root (str) : path for input files
             input_files (list) : input h5 files
             datasetname (str) : dataset name inside h5 file
@@ -88,6 +89,7 @@ class GraphDatasetOnline(PyGDataset):
             connect_only_real (bool) : connect all particles or only existing
             shuffle (bool): shuffle or not 
         """
+        self.in_memory = in_memory
         self.strides = [0]
         self.len_in_files = []
         self.input_files = input_files
@@ -104,7 +106,10 @@ class GraphDatasetOnline(PyGDataset):
         self.current_file_idx=0
         self.current_in_file = h5py.File(self.processed_file_names[self.current_file_idx],'r')#,driver='core',backing_store=False)
         self.current_chunk_idx = 0
-        self.current_pytorch_datas = self.in_memory_data(shuffle=self.shuffle)
+        if not self.in_memory :
+            self.current_pytorch_datas = self.in_memory_data(shuffle=self.shuffle)
+        else :
+            self.total_prepared_dataset,self.current_pytorch_datas = self.get_all_in_memory_data(shuffle=self.shuffle)
 
 
     @property 
@@ -119,7 +124,7 @@ class GraphDatasetOnline(PyGDataset):
 
 
     def len(self):
-        if self.n_events <= self.strides[-1]:
+        if (self.n_events>0) and (self.n_events <= self.strides[-1]):
             return self.n_events
         else:
             return self.strides[-1]
@@ -128,6 +133,8 @@ class GraphDatasetOnline(PyGDataset):
         for path in self.processed_paths:
             with h5py.File(path, 'r') as f:
                 self.strides.append(f[self.datasetname].shape[0])
+                if (self.n_events>0) and (self.strides[-1]> self.n_events): 
+                    self.strides[-1] = self.n_events 
                 if (self.n_events_per_file > 0) and (self.strides[-1]>self.n_events_per_file):
                     self.strides[-1] = self.n_events_per_file
         self.len_in_files = self.strides[1:]
@@ -148,8 +155,7 @@ class GraphDatasetOnline(PyGDataset):
         if infile==None:
             print('No file is passed for processing, exiting')
             exit()
-
-        file_dataset = prepare_ad_event_based_dataset(np.array(infile[self.datasetname])[n_start:n_end,:,:],truth_dataset=np.array(infile[self.truth_datasetname])[n_start:n_end])
+        file_dataset = prepare_ad_event_based_dataset(np.array(infile[self.datasetname][n_start:n_end,:,:]),truth_dataset=np.array(infile[self.truth_datasetname][n_start:n_end]))
         return file_dataset
 
 
@@ -165,32 +171,48 @@ class GraphDatasetOnline(PyGDataset):
         else :
             return datas
 
+    def get_all_in_memory_data(self,shuffle=False): 
+        total_file_dataset = []
+        for i,path in enumerate(self.processed_paths):
+            infile = h5py.File(path, 'r')
+            file_dataset = self.get_data_from_file_basic(n_start=0,n_end=self.len_in_files[i],infile=infile) 
+            total_file_dataset.append(file_dataset)
+        total_file_dataset = np.concatenate(total_file_dataset,axis=0)
+        prepared_dataset,datas =  prepare_graph_datas(total_file_dataset,self.input_shape[0],connect_only_real=self.connect_only_real)
+        if shuffle:
+            random.Random(0).shuffle(datas)
+            random.Random(0).shuffle(prepared_dataset)
+        return prepared_dataset,datas
+
 
     def get(self, idx):
         """ Used by PyTorch DataSet class """    
-        file_idx = np.searchsorted(self.strides, idx,side='right') - 1
-        idx_in_file = idx - self.strides[max(0, file_idx)] 
-        if file_idx >= self.strides.size:
-            raise Exception(f'{idx} is beyond the end of the event list {self.strides[-1]}')
-        if self.current_file_idx != file_idx:
-            self.current_file_idx = file_idx
-            self.current_in_file.close()
-            self.current_in_file = h5py.File(self.processed_paths[self.current_file_idx],'r')#,driver='core',backing_store=False)
-            self.current_chunk_idx = 0 #reset current chunk index
-            self.current_pytorch_datas = self.in_memory_data(shuffle=self.shuffle)
-        if (idx_in_file >= (self.current_chunk_idx+1)*self.data_chunk_size): 
-            self.current_chunk_idx+=1
-            self.current_pytorch_datas = self.in_memory_data(shuffle=self.shuffle)
-        idx_in_chunk =  idx_in_file % len(self.current_pytorch_datas)
-        element_to_yield = self.current_pytorch_datas[idx_in_chunk]
-        #Finally reset everything at the end of an epoch
-        if idx==self.len()-1:
-            if self.current_file_idx!=0:
-                self.current_file_idx=0
+        if not self.in_memory:
+            file_idx = np.searchsorted(self.strides, idx,side='right') - 1
+            idx_in_file = idx - self.strides[max(0, file_idx)] 
+            if file_idx >= self.strides.size:
+                raise Exception(f'{idx} is beyond the end of the event list {self.strides[-1]}')
+            if self.current_file_idx != file_idx:
+                self.current_file_idx = file_idx
                 self.current_in_file.close()
                 self.current_in_file = h5py.File(self.processed_paths[self.current_file_idx],'r')#,driver='core',backing_store=False)
-            self.current_chunk_idx = 0
-            self.current_pytorch_datas =self.in_memory_data(shuffle=self.shuffle)
+                self.current_chunk_idx = 0 #reset current chunk index
+                self.current_pytorch_datas = self.in_memory_data(shuffle=self.shuffle)
+            if (idx_in_file >= (self.current_chunk_idx+1)*self.data_chunk_size): 
+                self.current_chunk_idx+=1
+                self.current_pytorch_datas = self.in_memory_data(shuffle=self.shuffle)
+            idx_in_chunk =  idx_in_file % len(self.current_pytorch_datas)
+            element_to_yield = self.current_pytorch_datas[idx_in_chunk]
+            #Finally reset everything at the end of an epoch
+            if idx==self.len()-1:
+                if self.current_file_idx!=0:
+                    self.current_file_idx=0
+                    self.current_in_file.close()
+                    self.current_in_file = h5py.File(self.processed_paths[self.current_file_idx],'r')#,driver='core',backing_store=False)
+                self.current_chunk_idx = 0
+                self.current_pytorch_datas =self.in_memory_data(shuffle=self.shuffle)
+        else:
+            element_to_yield = self.current_pytorch_datas[idx]
         return element_to_yield
         
 

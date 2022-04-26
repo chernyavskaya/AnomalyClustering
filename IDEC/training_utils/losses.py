@@ -44,6 +44,7 @@ def chamfer_loss_split(target, reco, in_pid, out_pid,reduction='mean'):
     ''' Chamfer loss split into two parts : non-zero particles and zero-particles
         input : target, reco, in_pid, out_pid
         output : chamfer loss for non-zero particles, chamfer loss for zero-particles    
+        reduction : over batches. None should be used for evaluation per event/jet
     '''
     n_batches = 0 #number of events in a sub-batch (sub if multigpu are used)
     tot_eucl_non_zero = []
@@ -88,14 +89,14 @@ def chamfer_loss_split(target, reco, in_pid, out_pid,reduction='mean'):
         return torch.stack(tot_eucl_non_zero),torch.stack(tot_eucl_zero)
 
 class ChamferLossSplitPID(torch.nn.Module):
-    def __init__(self,pids) :
+    def __init__(self,pids,reduction='mean') :
         super(ChamferLossSplitPID, self).__init__()
         self.pids = pids
     def forward(self, target, reco, in_pid, out_pid):
-        return chamfer_loss_split_pid(target, reco, in_pid, out_pid,self.pids)
+        return chamfer_loss_split_pid(target, reco, in_pid, out_pid,self.pids,reduction=self.reduction)
 
 
-def chamfer_loss_split_pid(target, reco, in_pid, out_pid, pids):
+def chamfer_loss_split_pid(target, reco, in_pid, out_pid, pids,reduction='mean'):
     ''' Chamfer loss split into two parts : non-zero particles (each calculated per pid) and zero-particles
         input : target, reco, in_pid, out_pid
         output : chamfer loss for non-zero particles which is summed over all pid, chamfer loss for zero-particles    
@@ -131,10 +132,14 @@ def chamfer_loss_split_pid(target, reco, in_pid, out_pid, pids):
 
         n_batches+=1
 
-    for pid in  pids: 
-        eucl_losses[pid] /= n_batches  
+    eucl_losses_tot_pid = torch.sum(torch.stack(eucl_losses,dim=0),dim=0) #sum over pids or consider mean 
 
-    return torch.mean(eucl_losses[1:]),eucl_losses[0]
+    if reduction=='mean':
+        return (torch.sum(torch.stack(eucl_losses_tot_pid))/n_batches), (torch.sum(torch.stack(eucl_losses[0]))/n_batches)
+    elif reduction=='sum':
+        return (np.sum(torch.stack(eucl_losses_tot_pid))), (np.sum(torch.stack(eucl_losses[0])))
+    else :
+        return torch.stack(eucl_losses_tot_pid),torch.stack(eucl_losses[0]) 
 
 
 def chamfer_loss_numpy(target, reco):
@@ -149,7 +154,20 @@ def chamfer_loss_numpy(target, reco):
     return eucl, idx_min_dist_to_outputs, idx_min_dist_to_inputs
 
 
-def chamfer_loss(target, reco, batch,reduction='sum'):
+def chamfer_loss_per_pid(in_values, out_values, in_pid, out_pid,pids, batch,reduction='sum'):
+    eucl = []
+    torch.tensor(0,dtype=torch.float,device=in_values.device)
+    for pid in pids:
+        in_pid = in_pid.reshape(-1,1)
+        out_pid = out_pid.reshape(-1,1)
+        zero_tensor =  torch.tensor(0,dtype=torch.float,device=in_values.device)
+        in_values_pid_masked = torch.where(in_pid==pid,in_values,zero_tensor)
+        out_values_pid_masked = torch.where(out_pid==pid,out_values,zero_tensor)
+        eucl.append(chamfer_loss(in_values_pid_masked,out_values_pid_masked,batch,reduction=reduction,return_indecies=False))
+    return torch.sum(torch.stack(eucl,dim=0),dim=0) #sum over pids
+
+
+def chamfer_loss(target, reco, batch,reduction='sum',return_indecies = True):
     x = to_dense_batch(target, batch)[0]
     y = to_dense_batch(reco, batch)[0] 
     diff = pairwise_distance(x,y)
@@ -159,29 +177,33 @@ def chamfer_loss(target, reco, batch,reduction='sum'):
     # For every output value, find its closest input value; for every input value, find its closest output value.
     min_dist_xy = torch.min(dist, dim = -1)  # Get min distance per row - Find the closest input to the output
     min_dist_yx = torch.min(dist, dim = -2)  # Get min distance per column - Find the closest output to the input
-    if reduction=='sum' :
-        eucl =  1./2*torch.sum(min_dist_xy.values + min_dist_yx.values)
-    elif reduction=='mean' :
-        eucl =  1./2*torch.mean(min_dist_xy.values + min_dist_yx.values)
-    elif reduction=='none' :
-        eucl =  1./2*(min_dist_xy.values + min_dist_yx.values)
 
     batch_size = x.shape[0]
     num_particles = x.shape[1]
-    eucl =  eucl/(batch_size*num_particles)
+    if reduction=='sum' :
+        eucl =  1./2*torch.sum(min_dist_xy.values + min_dist_yx.values)
+    elif reduction=='mean' :
+        eucl =  1./2*torch.sum(min_dist_xy.values + min_dist_yx.values)/batch_size
+    elif reduction=='none' :
+        eucl =  1./2*(min_dist_xy.values + min_dist_yx.values)
 
-    xy_idx = min_dist_xy.indices.clone()
-    yx_idx = min_dist_yx.indices.clone() 
+    #eucl =  eucl/num_particles ### divide over the particle numbers or not ?  given that everything is padded not sure it makes sense
 
-    aux_idx = num_particles * torch.arange(batch_size).to(target.device) #We create auxiliary indices to separate per batch of particles
-    aux_idx = aux_idx.view(batch_size, 1)
-    aux_idx = torch.repeat_interleave(aux_idx, num_particles, axis=-1)
-    xy_idx = xy_idx + aux_idx
-    yx_idx = yx_idx + aux_idx
+    if return_indecies:
+        xy_idx = min_dist_xy.indices.clone()
+        yx_idx = min_dist_yx.indices.clone() 
 
-    xy_idx = xy_idx.reshape((batch_size*num_particles))
-    yx_idx = yx_idx.reshape((batch_size*num_particles))
-    return  eucl, xy_idx, yx_idx
+        aux_idx = num_particles * torch.arange(batch_size).to(target.device) #We create auxiliary indices to separate per batch of particles
+        aux_idx = aux_idx.view(batch_size, 1)
+        aux_idx = torch.repeat_interleave(aux_idx, num_particles, axis=-1)
+        xy_idx = xy_idx + aux_idx
+        yx_idx = yx_idx + aux_idx
+
+        xy_idx = xy_idx.reshape((batch_size*num_particles))
+        yx_idx = yx_idx.reshape((batch_size*num_particles))
+        return  eucl, xy_idx, yx_idx
+    else :
+        return  eucl
 
     
 def categorical_loss_cosine(target, reco,xy_idx, yx_idx,loss_fnc):

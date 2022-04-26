@@ -4,8 +4,8 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 import sklearn.metrics as skl
-plt_style = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/ADgvae/utils/adfigstyle.mplstyle'
-plt.style.use(plt_style)
+#plt_style = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/ADgvae/utils/adfigstyle.mplstyle'
+#plt.style.use(plt_style)
 
 
 def loss_curves(train_valid_loss_dict, save_path):

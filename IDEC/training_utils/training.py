@@ -19,7 +19,7 @@ from torch_geometric.data import Data, Batch, DataLoader
 from torch_geometric.utils import to_dense_batch
 
 from training_utils.metrics import cluster_acc
-from training_utils.losses import chamfer_loss,huber_mask,categorical_loss,huber_loss,global_met_loss,chamfer_loss_split, ChamferLossSplit, ChamferLossSplitPID
+from training_utils.losses import chamfer_loss,huber_mask,categorical_loss,huber_loss,global_met_loss,chamfer_loss_split, ChamferLossSplit, ChamferLossSplitPID, chamfer_loss_per_pid
 from training_utils.plot_losses import loss_curves
 from tensorboard.backend.event_processing import event_accumulator
 import multiprocessing as mp
@@ -141,9 +141,9 @@ def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight
     else:
         model.train()
 
-    simple_chamfer=False
+    simple_chamfer=True
     if not simple_chamfer:
-        chamfer_loss_module = ChamferLossSplit()
+        chamfer_loss_module = ChamferLossSplit(reduction='mean')
         #chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.num_pid_classes))
         if device=='cpu':
            chamfer_loss_func = chamfer_loss_split
@@ -154,6 +154,7 @@ def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight
     total_loss, total_reco_loss, total_pid_loss, total_met_loss, total_reco_zero_loss = 0.,0.,0.,0.,0.
     t = tqdm.tqdm(enumerate(loader),total=len(loader))
 
+    batch_size = loader.batch_size
     for i, data in t:
         data = data.to(device)
         x = data.x.to(device)
@@ -169,15 +170,23 @@ def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight
 
         #use chamefer only to get indecies first 
         reco_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.num_pid_classes:],batch_index)
+        reco_loss /= batch_size
         reco_zero_loss = torch.tensor(0.,device=device)
 
         met_loss = global_met_loss(x_met, x_met_bar)
 
         #energy_loss  = huber_loss(x[:,[model.energy_idx,model.pt_idx]],x_bar[:,[model.num_pid_classes-1 + model.energy_idx, model.num_pid_classes-1 + model.pt_idx]],xy_idx, yx_idx)
 
-        nll_loss = torch.nn.NLLLoss(reduction='mean',weight=pid_weight)
+        nll_loss = torch.nn.NLLLoss(reduction='none',weight=pid_weight)
         pid_loss = categorical_loss(x[:,0],x_bar[:,0:model.num_pid_classes],xy_idx, yx_idx,nll_loss) #target, reco
-         
+        pid_loss= torch.sum(pid_loss)/model.num_fixed_nodes
+        pid_loss /=batch_size
+
+        reco_loss = chamfer_loss_per_pid(x[:,1:],x_bar[:,model.num_pid_classes:], x[:,0],x_bar[:,0:model.num_pid_classes].argmax(1), torch.arange(model.num_pid_classes), batch_index)
+        reco_loss /= batch_size
+
+
+
         if not simple_chamfer:
             target_dense = to_dense_batch(x[:,1:], batch_index)[0]
             reco_dense = to_dense_batch(x_bar[:,model.num_pid_classes:], batch_index)[0]
@@ -242,17 +251,21 @@ def train_test_idec_graph(model,loader,p_all,optimizer,device,gamma,pid_weight,p
 
         nll_loss = torch.nn.NLLLoss(reduction='mean',weight=pid_weight)
         pid_loss = categorical_loss(x[:,0],x_bar[:,0:model.ae.num_pid_classes],xy_idx, yx_idx,nll_loss) #target, reco
+        
+        reco_loss = chamfer_loss_per_pid(x[:,1:],x_bar[:,model.ae.num_pid_classes:], x[:,0],x_bar[:,0:model.ae.num_pid_classes].argmax(1), torch.arange(model.num_pid_classes), batch_index)
+        reco_zero_loss = torch.tensor(0.,device=device)
+
 
         #reco_loss, reco_zero_loss =  chamfer_loss_split(x[:,1:],x_bar[:,model.ae.num_pid_classes:],x[:,0],x_bar[:,0:model.ae.num_pid_classes],batch_index)
-        target_dense = to_dense_batch(x[:,1:], batch_index)[0]
-        reco_dense = to_dense_batch(x_bar[:,model.ae.num_pid_classes:], batch_index)[0]
-        in_pid_dense = to_dense_batch(x[:,0], batch_index)[0]
-        out_pid_dense = to_dense_batch(x_bar[:,0:model.ae.num_pid_classes].argmax(1), batch_index)[0]
+        #target_dense = to_dense_batch(x[:,1:], batch_index)[0]
+        #reco_dense = to_dense_batch(x_bar[:,model.ae.num_pid_classes:], batch_index)[0]
+        #in_pid_dense = to_dense_batch(x[:,0], batch_index)[0]
+        #out_pid_dense = to_dense_batch(x_bar[:,0:model.ae.num_pid_classes].argmax(1), batch_index)[0]
 
-        res = chamfer_loss_func(target_dense,reco_dense,in_pid_dense,out_pid_dense)
-        if device!='cpu':
-            res_gathered = torch.mean(torch.stack(res,dim=0),dim=1)
-            reco_loss,reco_zero_loss = res_gathered[0],res_gathered[1]
+        #res = chamfer_loss_func(target_dense,reco_dense,in_pid_dense,out_pid_dense)
+        #if device!='cpu':
+        #    res_gathered = torch.mean(torch.stack(res,dim=0),dim=1)
+        #    reco_loss,reco_zero_loss = res_gathered[0],res_gathered[1]
 
 
         #kl_loss = F.kl_div(q.log(), Variable(p_all[i],requires_grad=True).log(),log_target=True,reduction='batchmean') 
@@ -302,7 +315,7 @@ def pretrain_ae_graph(model,train_loader,test_loader,optimizer,start_epoch,n_epo
             save_ckp(checkpoint, pretrain_path.replace('.pkl','_epoch_{}.pkl'.format(epoch+1)))
             print('New checkpoint for epoch {} saved'.format(epoch+1))
 
-        if epoch>=10 and test_loss < best_test_loss*1.01: #allow variation within 1%
+        if epoch>=10 and test_loss < best_test_loss: 
             best_test_loss = test_loss
             best_fpath = pretrain_path.replace(pretrain_path.rsplit('/', 1)[-1],'')+'best_model_AE.pkl'
             checkpoint = create_ckp(epoch, train_loss,test_loss,model.state_dict(),optimizer.state_dict(), scheduler.state_dict())
@@ -331,7 +344,9 @@ def evaluate_ae_graph(model,loader, device):
         if device=='cpu':
             chamfer_loss_func = chamfer_loss_split
         else :
-            chamfer_loss_func = torch.nn.DataParallel(chamfer_loss_module, device_ids=[0, 1],output_device=device)
+            #chamfer_loss_func = torch.nn.DataParallel(chamfer_loss_module, device_ids=[0, 1],output_device=device)
+            #TODO : here I should implement GPU count
+            chamfer_loss_func = chamfer_loss_module
 
 
     total_simple_chamfer_loss, total_loss, total_reco_loss, total_pid_loss, total_met_loss = [],[],[],[],[]
@@ -351,13 +366,16 @@ def evaluate_ae_graph(model,loader, device):
         #use chamefer only to get indecies first 
         simple_chamfer_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.num_pid_classes:],batch_index,reduction='none')
         simple_chamfer_loss = torch.mean(simple_chamfer_loss,dim=-1)
-        reco_loss = simple_chamfer_loss
         reco_zero_loss = torch.tensor(0.,device=device)
 
         met_loss = torch.mean(global_met_loss(x_met, x_met_bar,reduction='none'),axis=-1)
         nll_loss = torch.nn.NLLLoss(reduction='none')#,weight=pid_weight)
         pid_loss = categorical_loss(x[:,0],x_bar[:,0:model.num_pid_classes],xy_idx, yx_idx,nll_loss) #target, reco
-        pid_loss = torch.mean(to_dense_batch(pid_loss, batch_index)[0],axis=-1)
+        pid_loss = torch.sum(to_dense_batch(pid_loss, batch_index)[0],axis=-1)/model.num_fixed_nodes
+
+        reco_loss = chamfer_loss_per_pid(x[:,1:],x_bar[:,model.num_pid_classes:], x[:,0],x_bar[:,0:model.num_pid_classes].argmax(1), torch.arange(model.num_pid_classes), batch_index,reduction='none')
+        reco_loss = torch.mean(reco_loss,dim=-1)
+
 
         if not simple_chamfer:
             target_dense = to_dense_batch(x[:,1:], batch_index)[0]
@@ -369,27 +387,27 @@ def evaluate_ae_graph(model,loader, device):
             if device!='cpu':
                 res_gathered = torch.stack(res,dim=0)
                 reco_loss,reco_zero_loss = res_gathered[0],res_gathered[1]
-
+                
         loss = reco_loss +reco_zero_loss + pid_loss + met_loss #total loss with weights ? 
-        total_loss.append(loss.clone().cpu().numpy())
-        total_reco_loss.append((reco_loss+reco_zero_loss).cpu().numpy())
-        total_pid_loss.append(pid_loss.cpu().numpy())
-        total_met_loss.append(met_loss.cpu().numpy())
-        total_simple_chamfer_loss.append(simple_chamfer_loss.cpu().numpy())
+        total_loss.append(loss.clone())
+        total_reco_loss.append(reco_loss+reco_zero_loss)
+        total_pid_loss.append(pid_loss)
+        total_met_loss.append(met_loss)
+        total_simple_chamfer_loss.append(simple_chamfer_loss)
 
-        pred_features.append(x_bar.cpu().numpy())
-        pred_features_met.append(x_met_bar.cpu().numpy())
-        latent_pred.append(z.cpu().numpy())
-        input_features.append(x.cpu().numpy())
-        input_met.append(x_met.cpu().numpy())
-        input_true_labels.append(y.cpu().numpy())
+        pred_features.append(x_bar)
+        pred_features_met.append(x_met_bar)
+        latent_pred.append(z)
+        input_features.append(x)
+        input_met.append(x_met)
+        input_true_labels.append(y)
                 
     loss_dict = {}
-    loss_dict['all_reco_chamfer'] = np.concatenate(total_simple_chamfer_loss,axis=0) 
-    loss_dict['tot'] = np.concatenate(total_loss,axis=0)
-    loss_dict['reco'] = np.concatenate(total_reco_loss,axis=0) 
-    loss_dict['pid'] = np.concatenate(total_pid_loss,axis=0)
-    loss_dict['met'] = np.concatenate(total_met_loss,axis=0) 
+    loss_dict['tot'] = torch.cat(total_loss).cpu().numpy() 
+    loss_dict['reco'] = torch.cat(total_reco_loss).cpu().numpy() 
+    loss_dict['pid'] = torch.cat(total_pid_loss).cpu().numpy() 
+    loss_dict['met'] = torch.cat(total_met_loss).cpu().numpy() 
+    loss_dict['all_reco_chamfer'] = torch.cat(total_simple_chamfer_loss).cpu().numpy() 
 
     batch_size = loader.batch_size
     pred_features = detach_reshape(pred_features,len(loader),batch_size,shape=3)
@@ -399,6 +417,7 @@ def evaluate_ae_graph(model,loader, device):
     input_met = detach_reshape(input_met,len(loader),batch_size,shape=2)
     input_true_labels = detach_reshape(input_true_labels,len(loader),batch_size,shape=2)
 
+
     out_dict = {}
     out_dict['pred_features'] = pred_features
     out_dict['pred_met'] = pred_features_met
@@ -407,10 +426,12 @@ def evaluate_ae_graph(model,loader, device):
     out_dict['input_met'] = input_met
     out_dict['input_true_labels'] = input_true_labels
 
+
     return out_dict, loss_dict
 
 def detach_reshape(ar,num_batches,batch_size,shape):
-    ar = np.concatenate(ar,axis=0)
+    #ar = np.concatenate(ar,axis=0)
+    ar = torch.cat(ar).cpu().numpy()
     if shape==2:
         if len(ar.shape)==1: 
             ar = ar.reshape((-1,1))

@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from torch_geometric.nn import Sequential, GCN, GCNConv, EdgeConv, GATConv, GATv2Conv, global_mean_pool, DynamicEdgeConv, BatchNorm
+from torch_geometric.nn import GCNConv, EdgeConv, GATConv, global_mean_pool, DynamicEdgeConv, BatchNorm
 
 
 class EmbeddingLayer(nn.Module):

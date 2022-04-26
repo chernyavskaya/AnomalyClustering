@@ -70,62 +70,41 @@ if __name__ == "__main__":
     pathlib.Path(output_path).mkdir(parents=True, exist_ok=True)
 
     DATA_PATH = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/autoencoder_for_anomaly/files/AD_event_based/graph_data/validation/'
+    #DATA_PATH = '/mnt/ceph/users/nadezda/AD_data/AD_event_based/validation/'
+
     BG_NAME = 'background_validation_fixed.h5'
     SIG_NAMES = 'Ato4l,hChToTauNu,hToTauTau,LQ'.split(',') 
 
-    if not args.generator:
-        filename = DATA_PATH + BG_NAME 
-        in_file = h5py.File(filename, 'r') 
-        file_dataset = np.array(in_file['Particles'])
-        truth_dataset = np.array(in_file['ProcessID'])
-        file_dataset =  data_proc.prepare_ad_event_based_dataset(file_dataset,truth_dataset,1e6,shuffle=True)
-        prepared_dataset,datas =  data_proc.prepare_graph_datas(file_dataset,params_dict['input_shape'][0],n_top_proc = -1,connect_only_real=True)
-        #pid_weight = data_proc.get_relative_weights(prepared_dataset[:,1:,1].reshape(-1),mode='max')
-        #pid_weight = torch.tensor(pid_weight).float().to(device)
-        bg_dataset = GraphDataset(datas)
-
-
-        file_datasets_signals = []
-        for SIG_NAME in SIG_NAMES:
-            SIG_NAME_file = 'sig_'+SIG_NAME+'_fixed.h5'
-            filename_sig = DATA_PATH + SIG_NAME_file 
-            in_file_sig = h5py.File(filename_sig, 'r') 
-            file_dataset_sig = np.array(in_file_sig['Particles'])
-            truth_dataset_sig = np.array(in_file_sig['ProcessID'])
-            file_dataset_sig =  data_proc.prepare_ad_event_based_dataset(file_dataset_sig,truth_dataset_sig,1e5,shuffle=True)
-            file_datasets_signals.append(file_dataset_sig)
-        file_dataset_sig = np.concatenate(file_datasets_signals,axis=0)
-        prepared_dataset_sig,datas_sig =  data_proc.prepare_graph_datas(file_dataset_sig,params_dict['input_shape'][0],n_top_proc = -1,connect_only_real=True)
-        sig_dataset = GraphDataset(datas_sig)
-    else :
-        bg_dataset = GraphDatasetOnline(root=DATA_PATH,input_files=[BG_NAME],datasetname='Particles',truth_datasetname='ProcessID',
-                                  n_events=-1,data_chunk_size=int(1e4),
+    bg_dataset = GraphDatasetOnline(root=DATA_PATH,in_memory=(args.generator==0),input_files=[BG_NAME],
+                                  datasetname='Particles',truth_datasetname='ProcessID',
+                                  n_events=1e4,n_events_per_file=-1,data_chunk_size=int(2e3),
                                   input_shape=[18,5],connect_only_real=True, 
                                   shuffle=True)
                         
-        #sig_dataset = GraphDatasetOnline(root=DATA_PATH,input_files=['sig_'+s+'_fixed.h5' for s in SIG_NAMES],datasetname='Particles',truth_datasetname='ProcessID',
-        #                          n_events=-1,n_events_per_file=1e5,data_chunk_size=int(5e4),
-        #                          input_shape=[18,5],connect_only_real=True, 
-        #                          shuffle=True)
+    sig_dataset = GraphDatasetOnline(root=DATA_PATH,in_memory=(args.generator==0),input_files=['sig_'+s+'_fixed.h5' for s in SIG_NAMES],
+                                  datasetname='Particles',truth_datasetname='ProcessID',
+                                  n_events=4e4,n_events_per_file=1e4,data_chunk_size=int(2e3),
+                                  input_shape=[18,5],connect_only_real=True, 
+                                  shuffle=True)
 
 
     bg_loader = DataLoader(bg_dataset, batch_size=args.batch_size, shuffle=False,drop_last=True) #,num_workers=5
-    #sig_loader = DataLoader(sig_dataset, batch_size=args.batch_size, shuffle=False,drop_last=True) #,num_workers=5
+    sig_loader = DataLoader(sig_dataset, batch_size=args.batch_size, shuffle=False,drop_last=True) #,num_workers=5
 
 
     out_dict, loss_dict = evaluate_ae_graph(model_AE,bg_loader,device)
-    #out_dict_sig, loss_dict_sig = evaluate_ae_graph(model_AE,sig_loader,device)
+    out_dict_sig, loss_dict_sig = evaluate_ae_graph(model_AE,sig_loader,device)
 
     num_classes = model_AE.num_pid_classes
     pred_feats_merged, pred_feats_per_batch, pred_met = data_proc.prepare_final_output_features(out_dict['pred_features'],out_dict['pred_met'],num_classes,args.batch_size)
-    #pred_feats_merged_sig, pred_feats_per_batch_sig, pred_met_sig = data_proc.prepare_final_output_features(out_dict_sig['pred_features'],out_dict_sig['pred_met'],num_classes,args.batch_size)
+    pred_feats_merged_sig, pred_feats_per_batch_sig, pred_met_sig = data_proc.prepare_final_output_features(out_dict_sig['pred_features'],out_dict_sig['pred_met'],num_classes,args.batch_size)
 
 
     model_num = args.load_ae.split('epoch_')[1].replace('.pkl','.h5')
     out_bg_file = output_path+'/background_evaluated_model'+model_num
-    #out_sig_file = output_path+'/signals_evaluated_model'+model_num
+    out_sig_file = output_path+'/signals_evaluated_model'+model_num
     data_proc.prepare_ad_event_based_h5file(out_bg_file,out_dict['input_true_labels'],out_dict['input_features'], out_dict['input_met'],pred_feats_per_batch, pred_met,loss_dict)
-    #data_proc.prepare_ad_event_based_h5file(out_sig_file,out_dict_sig['input_true_labels'],out_dict_sig['input_features'], out_dict_sig['input_met'],pred_feats_per_batch_sig,pred_met_sig,loss_dict_sig)
+    data_proc.prepare_ad_event_based_h5file(out_sig_file,out_dict_sig['input_true_labels'],out_dict_sig['input_features'], out_dict_sig['input_met'],pred_feats_per_batch_sig,pred_met_sig,loss_dict_sig)
 
 
                                       

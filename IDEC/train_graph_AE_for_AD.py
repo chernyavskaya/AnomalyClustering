@@ -41,7 +41,7 @@ torch.autograd.set_detect_anomaly(True)
 from torch.utils.tensorboard import SummaryWriter
 import multiprocessing as mp
 
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
 #device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
 #device = torch.device('cpu')
 
@@ -112,7 +112,7 @@ if __name__ == "__main__":
     parser.add_argument('--dropout', default=0.01, type=float)  
     parser.add_argument('--activation', default='leakyrelu_0.1', type=str)  
     parser.add_argument('--n_run', type=int) 
-    parser.add_argument('--generator', default=1, type=int)
+    parser.add_argument('--generator', default=0, type=int)
     parser.add_argument('--n_epochs',default=100, type=int)
 
     args = parser.parse_args()
@@ -122,6 +122,7 @@ if __name__ == "__main__":
     args.hidden_channels = [int(s) for s in args.hidden_channels.replace(' ','').split(',')]
     args.input_shape = [int(s) for s in args.input_shape.replace(' ','').split(',')]
     base_output_path = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/autoencoder_for_anomaly/graph_AD_event_based/'
+    #base_output_path = '/mnt/home/nadezda/AD/Clustering/output/'
     output_path = base_output_path+'run_{}/'.format(args.n_run)
     pathlib.Path(output_path).mkdir(parents=True, exist_ok=True)
     pathlib.Path(output_path+'/fig_dir/').mkdir(parents=True, exist_ok=True)
@@ -135,41 +136,29 @@ if __name__ == "__main__":
     args.activation = get_activation_func(args.activation)
 
     DATA_PATH = '/eos/user/n/nchernya/MLHEP/AnomalyDetection/autoencoder_for_anomaly/files/AD_event_based/graph_data/'
+    #DATA_PATH = '/mnt/ceph/users/nadezda/AD_data/AD_event_based/'
     BG_NAME = 'background_train_fixed.h5'
 
     filename = DATA_PATH + BG_NAME 
-    if not args.generator:
-        in_file = h5py.File(filename, 'r') 
-        file_dataset = np.array(in_file['Particles'])
-        truth_dataset = np.array(in_file['ProcessID'])
-        file_dataset =  data_proc.prepare_ad_event_based_dataset(file_dataset,truth_dataset=truth_dataset,tot_evt=1e4,shuffle=True)
-        prepared_dataset,datas =  data_proc.prepare_graph_datas(file_dataset,args.input_shape[0],n_top_proc = -1,connect_only_real=True)
 
-        train_test_split = 0.8
-        train_len = int(len(datas)*train_test_split)
-        test_len = len(datas)-train_len
-        train_dataset = GraphDataset(datas[0:train_len])
-        test_dataset = GraphDataset(datas[train_len:])
-        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False,drop_last=True) #,num_workers=5
-        test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False,drop_last=True) #,num_workers=5
-    else:
-
-        train_dataset = GraphDatasetOnline(root=DATA_PATH,input_files=[BG_NAME],datasetname='Particles',truth_datasetname='ProcessID',
-                                  n_events=args.n_events,data_chunk_size=int(2e4),
-                                  input_shape=[18,5],connect_only_real=True, 
-                                  shuffle=True)
+    train_dataset = GraphDatasetOnline(root=DATA_PATH,in_memory=(args.generator==0),input_files=[BG_NAME],
+                                datasetname='Particles',truth_datasetname='ProcessID',
+                                n_events=args.n_events,data_chunk_size=int(1e3),
+                                input_shape=[18,5],connect_only_real=True, 
+                                shuffle=True)
                         
-        test_split = 0.1
-        test_dataset = GraphDatasetOnline(root=DATA_PATH,input_files=[BG_NAME.replace('train','test')],datasetname='Particles',truth_datasetname='ProcessID',
-                                  n_events=args.n_events*test_split,data_chunk_size=int(2e4),
-                                  input_shape=[18,5],connect_only_real=True, 
-                                  shuffle=True)
+    test_split = 0.1
+    test_dataset = GraphDatasetOnline(root=DATA_PATH,in_memory=(args.generator==0),
+                                input_files=[BG_NAME.replace('train','test')],datasetname='Particles',truth_datasetname='ProcessID',
+                                n_events=args.n_events*test_split,data_chunk_size=int(1e3),
+                                input_shape=[18,5],connect_only_real=True, 
+                                shuffle=True)
 
 
-        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False,drop_last=True) #,num_workers=5
-        test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False,drop_last=True) #,num_workers=5
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False,drop_last=True) #,num_workers=5
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False,drop_last=True) #,num_workers=5
 
-    pid_weight = data_proc.get_relative_weights(np.array(h5py.File(filename, 'r')['Particles'])[:,1:,-1].reshape(-1),mode='max')
+    pid_weight = data_proc.get_relative_weights(np.array(h5py.File(filename, 'r')['Particles'][:int(1e5),1:,-1]).reshape(-1),mode='max')
     print(pid_weight,type(pid_weight))
     #pid_weight_file = open(output_path+"/pid_weight.txt", "w")
     #for row in pid_weight:
@@ -178,7 +167,7 @@ if __name__ == "__main__":
 
 
     #this should be parametrizable 
-    pid_loss_weight = 0.5 #0.1
+    pid_loss_weight = 0.2 #0.1
     met_loss_weight = 5.0 #5
 
     print(args)
