@@ -141,10 +141,10 @@ def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight
     else:
         model.train()
 
-    simple_chamfer=True
+    simple_chamfer=False
     if not simple_chamfer:
         chamfer_loss_module = ChamferLossSplit(reduction='mean')
-        #chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.num_pid_classes))
+        #chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.num_pid_classes),reduction='mean')
         if device=='cpu':
            chamfer_loss_func = chamfer_loss_split
         else :
@@ -182,8 +182,8 @@ def train_test_ae_graph(model,loader,optimizer,device,pid_weight,pid_loss_weight
         pid_loss= torch.sum(pid_loss)/model.num_fixed_nodes
         pid_loss /=batch_size
 
-        reco_loss = chamfer_loss_per_pid(x[:,1:],x_bar[:,model.num_pid_classes:], x[:,0],x_bar[:,0:model.num_pid_classes].argmax(1), torch.arange(model.num_pid_classes), batch_index)
-        reco_loss /= batch_size
+        #reco_loss = chamfer_loss_per_pid(x[:,1:],x_bar[:,model.num_pid_classes:], x[:,0],x_bar[:,0:model.num_pid_classes].argmax(1), torch.arange(model.num_pid_classes), batch_index)
+        #reco_loss /= batch_size
 
 
 
@@ -340,7 +340,7 @@ def evaluate_ae_graph(model,loader, device):
     simple_chamfer=True
     if not simple_chamfer:
         chamfer_loss_module = ChamferLossSplit(reduction='none')
-        #chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.num_pid_classes))
+        #chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.num_pid_classes),reduction='none')
         if device=='cpu':
             chamfer_loss_func = chamfer_loss_split
         else :
@@ -366,7 +366,8 @@ def evaluate_ae_graph(model,loader, device):
         #use chamefer only to get indecies first 
         simple_chamfer_loss, xy_idx, yx_idx  = chamfer_loss(x[:,1:],x_bar[:,model.num_pid_classes:],batch_index,reduction='none')
         simple_chamfer_loss = torch.mean(simple_chamfer_loss,dim=-1)
-        reco_zero_loss = torch.tensor(0.,device=device)
+        reco_loss = torch.zeros(simple_chamfer_loss.shape,device=device)
+        reco_zero_loss = torch.zeros(simple_chamfer_loss.shape,device=device)
 
         met_loss = torch.mean(global_met_loss(x_met, x_met_bar,reduction='none'),axis=-1)
         nll_loss = torch.nn.NLLLoss(reduction='none')#,weight=pid_weight)
@@ -375,7 +376,6 @@ def evaluate_ae_graph(model,loader, device):
 
         reco_loss = chamfer_loss_per_pid(x[:,1:],x_bar[:,model.num_pid_classes:], x[:,0],x_bar[:,0:model.num_pid_classes].argmax(1), torch.arange(model.num_pid_classes), batch_index,reduction='none')
         reco_loss = torch.mean(reco_loss,dim=-1)
-
 
         if not simple_chamfer:
             target_dense = to_dense_batch(x[:,1:], batch_index)[0]

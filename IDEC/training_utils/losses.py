@@ -84,7 +84,7 @@ def chamfer_loss_split(target, reco, in_pid, out_pid,reduction='mean'):
     if reduction=='mean':
         return (torch.sum(torch.stack(tot_eucl_non_zero))/n_batches), (torch.sum(torch.stack(tot_eucl_zero))/n_batches)
     elif reduction=='sum':
-        return (np.sum(torch.stack(tot_eucl_non_zero))), (np.sum(torch.stack(tot_eucl_zero)))
+        return (np.sum(torch.stack(tot_eucl_non_zero))), (torch.sum(torch.stack(tot_eucl_zero)))
     else :
         return torch.stack(tot_eucl_non_zero),torch.stack(tot_eucl_zero)
 
@@ -92,6 +92,7 @@ class ChamferLossSplitPID(torch.nn.Module):
     def __init__(self,pids,reduction='mean') :
         super(ChamferLossSplitPID, self).__init__()
         self.pids = pids
+        self.reduction=reduction
     def forward(self, target, reco, in_pid, out_pid):
         return chamfer_loss_split_pid(target, reco, in_pid, out_pid,self.pids,reduction=self.reduction)
 
@@ -101,11 +102,12 @@ def chamfer_loss_split_pid(target, reco, in_pid, out_pid, pids,reduction='mean')
         input : target, reco, in_pid, out_pid
         output : chamfer loss for non-zero particles which is summed over all pid, chamfer loss for zero-particles    
     '''
-    eucl_non_zero = 0.
-    eucl_zero = 0.
-    eucl_losses = torch.zeros(len(pids)).to(target.device)
+    tot_eucl_losses = []
+    for pid in pids:
+        tot_eucl_losses.append([])
     n_batches = 0 #number of events in a sub-batch (sub if multigpu are used)
     for ib in range(target.shape[0]):
+        eucl_losses = torch.zeros(len(pids)).to(target.device)
         for pid in pids[1:]:
             #construct masks here based on pid 
             input_pid_mask = torch.eq(in_pid[ib],pid).to(target.device)
@@ -130,16 +132,20 @@ def chamfer_loss_split_pid(target, reco, in_pid, out_pid, pids,reduction='mean')
         n_out_zero_part = max(1,y_zero.shape[0])
         eucl_losses[0] += torch.sum(torch.norm(y_zero,dim=-1,p=2))/n_out_zero_part
 
+        for pid in pids:
+            tot_eucl_losses[pid].append(eucl_losses[pid])
         n_batches+=1
 
-    eucl_losses_tot_pid = torch.sum(torch.stack(eucl_losses,dim=0),dim=0) #sum over pids or consider mean 
+    for pid in pids:
+        tot_eucl_losses[pid] = torch.stack(tot_eucl_losses[pid])
+    eucl_losses_tot_pid = torch.sum(torch.stack(tot_eucl_losses[1:],dim=0),dim=0) #sum over pids or consider mean 
 
     if reduction=='mean':
-        return (torch.sum(torch.stack(eucl_losses_tot_pid))/n_batches), (torch.sum(torch.stack(eucl_losses[0]))/n_batches)
+        return (torch.sum(eucl_losses_tot_pid)/n_batches), (torch.stack(tot_eucl_losses[0])/n_batches)
     elif reduction=='sum':
-        return (np.sum(torch.stack(eucl_losses_tot_pid))), (np.sum(torch.stack(eucl_losses[0])))
+        return (torch.sum(eucl_losses_tot_pid)), (torch.sum(tot_eucl_losses[0]))
     else :
-        return torch.stack(eucl_losses_tot_pid),torch.stack(eucl_losses[0]) 
+        return eucl_losses_tot_pid,tot_eucl_losses[0]
 
 
 def chamfer_loss_numpy(target, reco):

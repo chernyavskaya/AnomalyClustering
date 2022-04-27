@@ -67,7 +67,7 @@ def plot_hist_many( datas, xlabel, ylabel, title, plotname=None, legend=[], ylog
     #min_score = np.min([0.9*np.quantile(x,0.03) for x in datas])
     max_score = np.max([np.max(x) for x in datas])
     min_score = np.min([np.min(x) for x in datas])
-    kwargs={'linewidth':2.3, 'fill':False, 'density':True,'histtype':'step'}
+    kwargs={'linewidth':2.3, 'fill':False, 'density':False,'histtype':'step'}
     bins = 100
     for i,data in enumerate(datas):
         if ylogscale:

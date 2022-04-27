@@ -41,8 +41,8 @@ torch.autograd.set_detect_anomaly(True)
 from torch.utils.tensorboard import SummaryWriter
 import multiprocessing as mp
 
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-#device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+#device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
 #device = torch.device('cpu')
 
 
@@ -75,15 +75,17 @@ if __name__ == "__main__":
     BG_NAME = 'background_validation_fixed.h5'
     SIG_NAMES = 'Ato4l,hChToTauNu,hToTauTau,LQ'.split(',') 
 
-    bg_dataset = GraphDatasetOnline(root=DATA_PATH,in_memory=(args.generator==0),input_files=[BG_NAME],
+    bg_dataset = GraphDatasetOnline(root=DATA_PATH,in_memory=(args.generator==0),
+                                  input_files=[BG_NAME],
                                   datasetname='Particles',truth_datasetname='ProcessID',
-                                  n_events=1e4,n_events_per_file=-1,data_chunk_size=int(2e3),
+                                  n_events=1e6,n_events_per_file=-1,data_chunk_size=int(2e3),
                                   input_shape=[18,5],connect_only_real=True, 
                                   shuffle=True)
                         
-    sig_dataset = GraphDatasetOnline(root=DATA_PATH,in_memory=(args.generator==0),input_files=['sig_'+s+'_fixed.h5' for s in SIG_NAMES],
+    sig_dataset = GraphDatasetOnline(root=DATA_PATH,in_memory=(args.generator==0),
+                                  input_files=['sig_'+s+'_fixed.h5' for s in SIG_NAMES],
                                   datasetname='Particles',truth_datasetname='ProcessID',
-                                  n_events=4e4,n_events_per_file=1e4,data_chunk_size=int(2e3),
+                                  n_events=-1,n_events_per_file=1e5,data_chunk_size=int(2e3),
                                   input_shape=[18,5],connect_only_real=True, 
                                   shuffle=True)
 
