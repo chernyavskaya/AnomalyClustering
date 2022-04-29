@@ -40,6 +40,7 @@ import training_utils.model_summary as summary
 torch.autograd.set_detect_anomaly(True)
 from torch.utils.tensorboard import SummaryWriter
 import multiprocessing as mp
+import pandas as pd
 
 device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
 #device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
@@ -114,6 +115,9 @@ if __name__ == "__main__":
     parser.add_argument('--n_run', type=int) 
     parser.add_argument('--generator', default=0, type=int)
     parser.add_argument('--n_epochs',default=100, type=int)
+    parser.add_argument('--pid_loss_weight',default=0.01, type=float)
+    parser.add_argument('--met_loss_weight',default=5, type=float)
+
 
     args = parser.parse_args()
     if args.n_run is None:
@@ -155,20 +159,19 @@ if __name__ == "__main__":
                                 shuffle=True)
 
 
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False,drop_last=True) #,num_workers=5
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False,drop_last=True) #,num_workers=5
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False,drop_last=True,num_workers=5) #,num_workers=5
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False,drop_last=True,num_workers=5) #,num_workers=5
 
     pid_weight = data_proc.get_relative_weights(np.array(h5py.File(filename, 'r')['Particles'][:int(1e5),1:,-1]).reshape(-1),mode='max')
-    print(pid_weight,type(pid_weight))
-    #pid_weight_file = open(output_path+"/pid_weight.txt", "w")
-    #for row in pid_weight:
-    #    np.savetxt(pid_weight_file, row)
+    with open(output_path+"/pid_weight.json", "w") as f:
+        import pandas as pd
+        json.dump(pd.Series(pid_weight).to_json(orient='values'), f)   
     pid_weight = torch.tensor(pid_weight).float().to(device)
 
 
     #this should be parametrizable 
-    pid_loss_weight = 0.2 #0.1
-    met_loss_weight = 5.0 #5
+    pid_loss_weight = args.pid_loss_weight #0.1
+    met_loss_weight = args.met_loss_weight #5
 
     print(args)
     train_idec()

@@ -72,6 +72,134 @@ class GraphDataset(PyGDataset):
         return self.datas[idx]
 
 
+class GraphDatasetOffline(PyGDataset):
+    def __init__(self,root,input_files,in_memory=False,n_events=-1,n_events_per_file=-1,transform=None, pre_transform=None):
+        super().__init__(transform=None, pre_transform=None)
+        """
+        Not yet implemented. Basically should be a version of Online but for lazy loaded files and full in memory reading 
+        """
+        self.in_memory = in_memory
+        self.strides = [0]
+        self.len_in_files = []
+        self.input_files = input_files
+        self.n_events = int(n_events)
+        self.n_events_per_file = int(n_events_per_file)
+        super(GraphDatasetOnline, self).__init__(root, transform, pre_transform)
+        self.calculate_offsets()
+        self.current_file_idx=0
+        self.current_in_file = h5py.File(self.processed_file_names[self.current_file_idx],'r')#,driver='core',backing_store=False)
+        self.current_chunk_idx = 0
+        if not self.in_memory :
+            self.current_pytorch_datas = self.in_memory_data(shuffle=self.shuffle)
+        else :
+            self.total_prepared_dataset,self.current_pytorch_datas = self.get_all_in_memory_data(shuffle=self.shuffle)
+
+
+    @property 
+    def processed_dir(self) -> str: #keep it as is in pytorch 
+        return self.root
+
+
+    @property
+    def processed_file_names(self):
+        proc_list = [self.root + '/' + f for f in self.input_files] 
+        return proc_list
+
+
+    def len(self):
+        if (self.n_events>0) and (self.n_events <= self.strides[-1]):
+            return self.n_events
+        else:
+            return self.strides[-1]
+
+    def calculate_offsets(self):
+        for path in self.processed_paths:
+            with h5py.File(path, 'r') as f:
+                self.strides.append(f[self.datasetname].shape[0])
+                if (self.n_events>0) and (self.strides[-1]> self.n_events): 
+                    self.strides[-1] = self.n_events 
+                if (self.n_events_per_file > 0) and (self.strides[-1]>self.n_events_per_file):
+                    self.strides[-1] = self.n_events_per_file
+        self.len_in_files = self.strides[1:]
+        self.strides = np.cumsum(self.strides)
+        if self.n_events==-1:
+            self.n_events = self.strides[-1]
+
+
+    def get_data_from_file(self):
+        n_start = self.current_chunk_idx*self.data_chunk_size
+        n_end = n_start+self.data_chunk_size 
+        if n_end > self.len_in_files[self.current_file_idx]:
+            n_end = self.len_in_files[self.current_file_idx]
+        return self.get_data_from_file_basic(n_start=n_start,n_end=n_end,infile=self.current_in_file)
+
+
+    def get_data_from_file_basic(self,n_start=0,n_end=0,infile=None):
+        if infile==None:
+            print('No file is passed for processing, exiting')
+            exit()
+        file_dataset = prepare_ad_event_based_dataset(np.array(infile[self.datasetname][n_start:n_end,:,:]),truth_dataset=np.array(infile[self.truth_datasetname][n_start:n_end]))
+        return file_dataset
+
+
+    def in_memory_data(self,shuffle=False,file_dataset=None,return_prepared_array=False): 
+        if file_dataset==None :
+            file_dataset = self.get_data_from_file() 
+        prepared_dataset,datas =  prepare_graph_datas(file_dataset,self.input_shape[0],connect_only_real=self.connect_only_real)
+        if shuffle:
+            random.Random(0).shuffle(datas)
+            random.Random(0).shuffle(prepared_dataset)
+        if return_prepared_array :
+            return prepared_dataset,datas
+        else :
+            return datas
+
+    def get_all_in_memory_data(self,shuffle=False): 
+        total_file_dataset = []
+        for i,path in enumerate(self.processed_paths):
+            infile = h5py.File(path, 'r')
+            file_dataset = self.get_data_from_file_basic(n_start=0,n_end=self.len_in_files[i],infile=infile) 
+            total_file_dataset.append(file_dataset)
+        total_file_dataset = np.concatenate(total_file_dataset,axis=0)
+        prepared_dataset,datas =  prepare_graph_datas(total_file_dataset,self.input_shape[0],connect_only_real=self.connect_only_real)
+        if shuffle:
+            random.Random(0).shuffle(datas)
+            random.Random(0).shuffle(prepared_dataset)
+        return prepared_dataset,datas
+
+
+    def get(self, idx):
+        """ Used by PyTorch DataSet class """    
+        if not self.in_memory:
+            file_idx = np.searchsorted(self.strides, idx,side='right') - 1
+            idx_in_file = idx - self.strides[max(0, file_idx)] 
+            if file_idx >= self.strides.size:
+                raise Exception(f'{idx} is beyond the end of the event list {self.strides[-1]}')
+            if self.current_file_idx != file_idx:
+                self.current_file_idx = file_idx
+                self.current_in_file.close()
+                self.current_in_file = h5py.File(self.processed_paths[self.current_file_idx],'r')#,driver='core',backing_store=False)
+                self.current_chunk_idx = 0 #reset current chunk index
+                self.current_pytorch_datas = self.in_memory_data(shuffle=self.shuffle)
+            if (idx_in_file >= (self.current_chunk_idx+1)*self.data_chunk_size): 
+                self.current_chunk_idx+=1
+                self.current_pytorch_datas = self.in_memory_data(shuffle=self.shuffle)
+            idx_in_chunk =  idx_in_file % len(self.current_pytorch_datas)
+            element_to_yield = self.current_pytorch_datas[idx_in_chunk]
+            #Finally reset everything at the end of an epoch
+            if idx==self.len()-1:
+                if self.current_file_idx!=0:
+                    self.current_file_idx=0
+                    self.current_in_file.close()
+                    self.current_in_file = h5py.File(self.processed_paths[self.current_file_idx],'r')#,driver='core',backing_store=False)
+                self.current_chunk_idx = 0
+                self.current_pytorch_datas =self.in_memory_data(shuffle=self.shuffle)
+        else:
+            element_to_yield = self.current_pytorch_datas[idx]
+        return element_to_yield
+        
+
+
 class GraphDatasetOnline(PyGDataset):
     def __init__(self,root,input_files,datasetname,truth_datasetname,in_memory=False,n_events=-1,n_events_per_file=-1,data_chunk_size=2e4,input_shape=[18,5],connect_only_real=True, shuffle=False,transform=None, pre_transform=None):
         super().__init__(transform=None, pre_transform=None)
@@ -314,7 +442,7 @@ def prepare_1d_datasets(file_dataset,n_top_proc = -1):
     return dataset_1d,dataset_proc_truth,dense_dataset
 
 
-def prepare_graph_datas(file_dataset,n_particles,n_top_proc = -1,connect_only_real=True):
+def prepare_graph_datas(file_dataset,n_particles,n_top_proc = -1,connect_only_real=True,output_file=None):
     #print('Preparing dataset, check that the feature indexing corresponds to your dataset!')
     datas = []
     #file_dataset = proprocess_e_pt(file_dataset,idx=[2,3],scale=1e5,log=True) #idx=[2,3]
@@ -328,24 +456,39 @@ def prepare_graph_datas(file_dataset,n_particles,n_top_proc = -1,connect_only_re
     tot_evt = file_dataset.shape[0]
     #print('Preparing the dataset of {} events'.format(tot_evt))
     n_objs = n_particles
-    if not connect_only_real:
-        #connecting all particles
-        adj = [csr_matrix(np.ones((n_objs,n_objs)) - np.eye(n_objs))]*tot_evt
-        edge_index = [from_scipy_sparse_matrix(a)[0] for a in adj]   
+    x = file_dataset[:,1:,1:]
+    y = file_dataset[:,0,0]
+    x_met = file_dataset[:,0,[2,4,5]] #2,5
+    out_file_num = 0
+    if output_file:
+        max_len = int(1e6)
+        if x.shape[0] > max_len :#>1e6 it will not fit in the memory 
+            for out_file_num in range(x.shape[0]//max_len):
+                outfile_current = outfile.split('.h5')[0]+'_'+str(out_file_num)+'.h5'
+                start = (out_file_num)*max_len
+                end = (out_file_num+1)*max_len
+                with h5py.File(outfile_current,'w') as outfile:
+                    outfile.create_dataset('x',x[start:end], compression='gzip')
+                    outfile.create_dataset('y',y[start:end], compression='gzip')
+                    outfile.create_dataset('x_met',x_met[start:end], compression='gzip')
+                    outfile.create_dataset('adj',np.concatenate(adj[start:end],axis=0), compression='gzip')
     else:
-        #connecting only real particles
-        adj_non_con = make_adjacencies(file_dataset[:,1:,])
-        adj_non_connected = [csr_matrix(adj_non_con[i]) for i in range(tot_evt)]
-        edge_index = [from_scipy_sparse_matrix(a)[0] for a in adj_non_connected]      
-
-    x = [torch.tensor(file_dataset[i_evt,1:,1:], dtype=torch.float) for i_evt in range(tot_evt)]
-    y = [torch.tensor(int(file_dataset[i_evt,0,0]), dtype=torch.int) for i_evt in range(tot_evt)]
-    #x_met = [torch.tensor(file_dataset[i_evt,0,[2,5]], dtype=torch.float) for i_evt in range(tot_evt)]
-    x_met = [torch.tensor(file_dataset[i_evt,0,[2,4,5]], dtype=torch.float) for i_evt in range(tot_evt)]
-    datas = [Data(x=x_event, edge_index=edge_index_event,y=torch.unsqueeze(y_event, 0),x_met=x_met_event) 
-    for x_event,edge_index_event,y_event,x_met_event in zip(x,edge_index,y,x_met)]
-    #print('Dataset of {} events prepared'.format(tot_evt))
-    return file_dataset,datas
+        if not connect_only_real:
+            #connecting all particles
+            adj = [np.ones((n_objs,n_objs)) - np.eye(n_objs)]*tot_evt
+        else:
+            #connecting only real particles
+            adj = make_adjacencies(file_dataset[:,1:,])
+        adj_sparse = [csr_matrix(adj[i]) for i in range(tot_evt)]
+        edge_index = [from_scipy_sparse_matrix(a)[0] for a in adj_sparse]      
+        x = [torch.tensor(x[i_evt], dtype=torch.float) for i_evt in range(tot_evt)]
+        y = [torch.tensor(int(y[i_evt]), dtype=torch.int) for i_evt in range(tot_evt)]
+        #x_met = [torch.tensor(x_met[i_evt], dtype=torch.float) for i_evt in range(tot_evt)]
+        x_met = [torch.tensor(x_met[i_evt], dtype=torch.float) for i_evt in range(tot_evt)]
+        datas = [Data(x=x_event, edge_index=edge_index_event,y=torch.unsqueeze(y_event, 0),x_met=x_met_event) 
+        for x_event,edge_index_event,y_event,x_met_event in zip(x,edge_index,y,x_met)]
+        #print('Dataset of {} events prepared'.format(tot_evt))
+        return file_dataset,datas
 
 
 def prepare_ad_event_based_dataset(file_dataset,truth_dataset=None,tot_evt=None,shuffle=True):
@@ -404,8 +547,8 @@ def prepare_ad_event_based_h5file(outfile,true_labels,input_feats_per_batch, inp
         handle.create_dataset('PredictedParticles', data=file_dataset_pred, compression='gzip')
         handle.create_dataset('ProcessID', data=true_labels, compression='gzip')
         for key in loss_dict.keys():
-            loss_label = 'Loss_'+key
-            handle.create_dataset(loss_label, data=loss_dict[key], compression='gzip')
+            if 'loss' in key:
+                handle.create_dataset(key, data=loss_dict[key], compression='gzip')
 
 
 process_name_dict = {0: 'WW_13TeV_50PU',

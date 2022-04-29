@@ -5,6 +5,7 @@ import numpy as np
 import tqdm
 import shutil
 import os, json
+import pickle
 
 from sklearn.cluster import MiniBatchKMeans, KMeans
 from sklearn.metrics.cluster import normalized_mutual_info_score as nmi_score
@@ -24,6 +25,8 @@ from training_utils.plot_losses import loss_curves
 from tensorboard.backend.event_processing import event_accumulator
 import multiprocessing as mp
 import torch.multiprocessing as torch_mp
+import data_utils.data_processing as data_proc
+
 
 
 def merge_loss_dicts(dict_list):
@@ -332,28 +335,27 @@ def pretrain_ae_graph(model,train_loader,test_loader,optimizer,start_epoch,n_epo
     summary_writer.close()
 
 
-
-def evaluate_ae_graph(model,loader, device):
+def evaluate_ae_graph(model,loader, device,outfile,pid_weight):
     model = model.eval() 
 
-    total_loss, total_reco_loss, total_pid_loss, total_met_loss, total_reco_zero_loss = 0.,0.,0.,0.,0.
-    simple_chamfer=True
+    simple_chamfer=False
     if not simple_chamfer:
         chamfer_loss_module = ChamferLossSplit(reduction='none')
         #chamfer_loss_module = ChamferLossSplitPID(pids = torch.arange(model.num_pid_classes),reduction='none')
         if device=='cpu':
             chamfer_loss_func = chamfer_loss_split
         else :
-            #chamfer_loss_func = torch.nn.DataParallel(chamfer_loss_module, device_ids=[0, 1],output_device=device)
-            #TODO : here I should implement GPU count
-            chamfer_loss_func = chamfer_loss_module
+            chamfer_loss_func = torch.nn.DataParallel(chamfer_loss_module, device_ids=np.arange(torch.cuda.device_count()),output_device=device)
 
-
+    total_loss, total_reco_loss, total_pid_loss, total_met_loss, total_reco_zero_loss = 0.,0.,0.,0.,0.
     total_simple_chamfer_loss, total_loss, total_reco_loss, total_pid_loss, total_met_loss = [],[],[],[],[]
     pred_features,pred_features_met,latent_pred = [],[],[] 
     input_features,input_met,input_true_labels = [],[],[] 
+    out_dict = {}
 
     t = tqdm.tqdm(enumerate(loader),total=len(loader))
+    out_file_num=0
+    batch_size = loader.batch_size
     for i, data in t:
         data = data.to(device)
         x = data.x.to(device)
@@ -370,7 +372,7 @@ def evaluate_ae_graph(model,loader, device):
         reco_zero_loss = torch.zeros(simple_chamfer_loss.shape,device=device)
 
         met_loss = torch.mean(global_met_loss(x_met, x_met_bar,reduction='none'),axis=-1)
-        nll_loss = torch.nn.NLLLoss(reduction='none')#,weight=pid_weight)
+        nll_loss = torch.nn.NLLLoss(reduction='none',weight=pid_weight)
         pid_loss = categorical_loss(x[:,0],x_bar[:,0:model.num_pid_classes],xy_idx, yx_idx,nll_loss) #target, reco
         pid_loss = torch.sum(to_dense_batch(pid_loss, batch_index)[0],axis=-1)/model.num_fixed_nodes
 
@@ -402,32 +404,38 @@ def evaluate_ae_graph(model,loader, device):
         input_met.append(x_met)
         input_true_labels.append(y)
                 
-    loss_dict = {}
-    loss_dict['tot'] = torch.cat(total_loss).cpu().numpy() 
-    loss_dict['reco'] = torch.cat(total_reco_loss).cpu().numpy() 
-    loss_dict['pid'] = torch.cat(total_pid_loss).cpu().numpy() 
-    loss_dict['met'] = torch.cat(total_met_loss).cpu().numpy() 
-    loss_dict['all_reco_chamfer'] = torch.cat(total_simple_chamfer_loss).cpu().numpy() 
+        if (len(pred_features)*batch_size>=int(3e5)) or (i==len(loader)-1):
+            num_batches = len(input_features)
+            outfile_current = outfile.split('.h5')[0]+'_'+str(out_file_num)+'.h5'
+            pred_features = detach_reshape(pred_features,num_batches,batch_size,shape=3)
+            pred_features_met = detach_reshape(pred_features_met,num_batches,batch_size,shape=2)
+            latent_pred =  detach_reshape(latent_pred,num_batches,batch_size,shape=2)
+            input_features = detach_reshape(input_features,num_batches,batch_size,shape=3)
+            input_met = detach_reshape(input_met,num_batches,batch_size,shape=2)
+            input_true_labels = detach_reshape(input_true_labels,num_batches,batch_size,shape=2)
+            out_dict['pred_features'] = pred_features
+            out_dict['pred_met'] = pred_features_met
+            out_dict['pred_latent'] = latent_pred
+            out_dict['input_features'] =input_features    
+            out_dict['input_met'] = input_met
+            out_dict['input_true_labels'] = input_true_labels
+            out_dict['loss_tot'] = torch.cat(total_loss).cpu().numpy() 
+            out_dict['loss_reco'] = torch.cat(total_reco_loss).cpu().numpy() 
+            out_dict['loss_pid'] = torch.cat(total_pid_loss).cpu().numpy() 
+            out_dict['loss_met'] = torch.cat(total_met_loss).cpu().numpy() 
+            out_dict['loss_all_reco_chamfer'] = torch.cat(total_simple_chamfer_loss).cpu().numpy() 
 
-    batch_size = loader.batch_size
-    pred_features = detach_reshape(pred_features,len(loader),batch_size,shape=3)
-    pred_features_met = detach_reshape(pred_features_met,len(loader),batch_size,shape=2)
-    latent_pred =  detach_reshape(latent_pred,len(loader),batch_size,shape=2)
-    input_features = detach_reshape(input_features,len(loader),batch_size,shape=3)
-    input_met = detach_reshape(input_met,len(loader),batch_size,shape=2)
-    input_true_labels = detach_reshape(input_true_labels,len(loader),batch_size,shape=2)
+            num_classes = model.num_pid_classes
+            pred_feats_merged, pred_feats_per_batch, pred_met = data_proc.prepare_final_output_features(out_dict['pred_features'],out_dict['pred_met'],num_classes,batch_size)
+            data_proc.prepare_ad_event_based_h5file(outfile_current,out_dict['input_true_labels'],out_dict['input_features'], out_dict['input_met'],pred_feats_per_batch, pred_met,out_dict)
 
-
-    out_dict = {}
-    out_dict['pred_features'] = pred_features
-    out_dict['pred_met'] = pred_features_met
-    out_dict['pred_latent'] = latent_pred
-    out_dict['input_features'] =input_features    
-    out_dict['input_met'] = input_met
-    out_dict['input_true_labels'] = input_true_labels
-
-
-    return out_dict, loss_dict
+            out_file_num+=1
+            total_loss, total_reco_loss, total_pid_loss, total_met_loss, total_reco_zero_loss = 0.,0.,0.,0.,0.
+            total_simple_chamfer_loss, total_loss, total_reco_loss, total_pid_loss, total_met_loss = [],[],[],[],[]
+            pred_features,pred_features_met,latent_pred = [],[],[] 
+            input_features,input_met,input_true_labels = [],[],[] 
+            out_dict = {}
+    #return out_dict
 
 def detach_reshape(ar,num_batches,batch_size,shape):
     #ar = np.concatenate(ar,axis=0)
